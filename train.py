@@ -22,7 +22,7 @@ def train_pll(device, model, optimiser, dataloaders, args):
 
             # Forward
             outputs = model(inputs)  # (N, S)
-            outputs = torch.log_softmax(outputs, dim=-1)
+            outputs = torch.log_softmax(outputs.permute(1, 0), dim=-1)
             loss = criterion(outputs, labels)
 
             # Backward
@@ -69,7 +69,7 @@ def eval_pll(device, model, dataloader, args):
         labels = torch.exp(gm_dist.log_prob(perms.float())).to(device)  # (N, S)
         with torch.no_grad():
             outputs = model(inputs)  # (N, S)
-            outputs = torch.log_softmax(outputs, dim=-1)
+            outputs = torch.log_softmax(outputs.permute(1, 0), dim=-1)
             loss = criterion(outputs, labels)
 
         indices = torch.argsort(outputs, dim=-1, descending=True)

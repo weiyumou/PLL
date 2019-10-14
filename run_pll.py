@@ -116,6 +116,7 @@ def main():
 
     model = TransformerModel(len(TEXT.vocab.stoi), args.em_size,
                              args.num_heads, args.hid_size, args.num_layers).to(device)
+    model = torch.nn.DataParallel(model, dim=1)
     optimiser = optim.Adam(model.parameters())
 
     if args.eval:
@@ -126,12 +127,12 @@ def main():
             resume(model, args)
 
         test_loss, test_acc = eval_pll(device, model, dataloaders["test"], args)
-        args.logger.info(f"Eval: Test Loss = {test_loss}, Test Acc = {test_acc}")
+        logger.info(f"Eval: Test Loss = {test_loss}, Test Acc = {test_acc}")
     else:
         dataloaders = {
             "train": DataLoader(TextTrainDataset(train_txt, args.ngram, TEXT, args.poisson_rate),
                                 batch_size=args.train_batch_size,
-                                shuffle=False),
+                                shuffle=True),
             "val": DataLoader(TextEvalDataset(val_txt, args.ngram, TEXT),
                               batch_size=args.eval_batch_size,
                               shuffle=False),

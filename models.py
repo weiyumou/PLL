@@ -47,4 +47,4 @@ class TransformerModel(nn.Module):
         src = self.pos_encoder(src)
         output = self.transformer_encoder(src)
         output = self.decoder(output)
-        return torch.flatten(output.permute(1, 0, 2), start_dim=1)
+        return output.squeeze(dim=-1)
