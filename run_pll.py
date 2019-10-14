@@ -1,11 +1,15 @@
 import argparse
+import random
 
+import numpy as np
 import torch
 import torchtext
+from torch.utils.data import DataLoader
 from torchtext.data.utils import get_tokenizer
-import data
-import numpy as np
-import random
+
+from data import TextDataset
+from models import TransformerModel
+from train import train_pll
 
 
 def parse_args():
@@ -33,6 +37,22 @@ def parse_args():
                         type=int,
                         help='Val batch size for SL',
                         default=128)
+    parser.add_argument('--em_size',
+                        type=int,
+                        help='Size of the embeddings',
+                        default=256)
+    parser.add_argument('--num_heads',
+                        type=int,
+                        help='Number of heads in the MultiheadAttention',
+                        default=4)
+    parser.add_argument('--hid_size',
+                        type=int,
+                        help='Size of the hidden states',
+                        default=128)
+    parser.add_argument('--num_layers',
+                        type=int,
+                        help='Number of TransformerEncoders',
+                        default=4)
     parser.add_argument('--ngram',
                         type=int,
                         help='Number of words in a segment',
@@ -62,15 +82,25 @@ def main():
     TEXT = torchtext.data.Field(tokenize=get_tokenizer("basic_english"),
                                 init_token='<sos>',
                                 eos_token='<eos>',
-                                lower=True)
+                                lower=False)
     train_txt, val_txt, test_txt = torchtext.datasets.WikiText2.splits(TEXT, root=args.data_dir)
     TEXT.build_vocab(train_txt)
 
-    batch_size = 20
-    eval_batch_size = 10
-    train_data = data.TextDataset(train_txt, batch_size, TEXT)
-    # val_data = data.TextDataset(val_txt, eval_batch_size, TEXT)
-    # test_data = data.TextDataset(test_txt, eval_batch_size, TEXT)
+    dataloaders = {
+        "train": DataLoader(TextDataset(train_txt, args.ngram, TEXT),
+                            batch_size=args.train_batch_size,
+                            shuffle=False),
+        "val": DataLoader(TextDataset(val_txt, args.ngram, TEXT),
+                          batch_size=args.eval_batch_size,
+                          shuffle=False),
+        "test": DataLoader(TextDataset(test_txt, args.ngram, TEXT),
+                           batch_size=args.eval_batch_size,
+                           shuffle=False)
+    }
+
+    model = TransformerModel(len(TEXT.vocab.stoi), args.em_size,
+                             args.num_heads, args.hid_size, args.num_layers)
+    train_pll(device, model, dataloaders)
 
 
 if __name__ == '__main__':
