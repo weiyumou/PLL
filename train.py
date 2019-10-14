@@ -72,7 +72,7 @@ def eval_pll(device, model, dataloader, args):
             outputs = torch.log_softmax(outputs, dim=-1)
             loss = criterion(outputs, labels)
 
-        indices = torch.argsort(outputs, dim=1, descending=True)
+        indices = torch.argsort(outputs, dim=-1, descending=True)
         ranks = torch.arange(args.ngram, device=device).expand_as(indices)
         preds = torch.empty_like(indices).scatter_(1, indices, ranks).cpu()
         running_corrects += torch.sum(preds == perms).item()
