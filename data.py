@@ -66,36 +66,27 @@ def k_permute(n, k, ds):
 
 
 class TextDataset(Dataset):
-    def __init__(self, text_data, ngram, TEXT) -> None:
+    def __init__(self, text_data, ngram, tokeniser) -> None:
         super(TextDataset, self).__init__()
-        all_ngrams = self.parse_ngrams(text_data, ngram)
-        self.data = TEXT.numericalize(all_ngrams).permute(1, 0)  # torch.Size([4294, 9])
+        self.data = self.parse_ngrams(text_data, ngram, tokeniser)
 
     def __len__(self) -> int:
         return self.data.size(0)
 
     @staticmethod
-    def parse_ngrams(data, ngram):
-        paras = " ".join(data.examples[0].text).split("<eos>")
-        # nlp = spacy.load("en_core_web_sm")
+    def parse_ngrams(data, ngram, tokeniser):
         all_ngrams = []
-        for i, para in tqdm.tqdm(enumerate(paras), desc="Parsing Paragraphs", total=len(paras)):
-            para = para.strip()
-            if para and not para.startswith("="):
-                for item in ngrams(para.split(), ngram):
-                    all_ngrams.append(item)
-
-                # # Segment sentences
-                # for sent in nlp(para).sents:
-                #     # Generate ngrams
-                #     for item in ngrams(sent.text.split(), ngram):
-                #         all_ngrams.append(item)
-        return all_ngrams
+        for sentence in data:
+            tokenized_text = tokeniser.tokenize(sentence)
+            for item in ngrams(tokenized_text, ngram):
+                # item = ("[CLS]", ) + item
+                all_ngrams.append(tokeniser.convert_tokens_to_ids(item))
+        return torch.tensor(all_ngrams)
 
 
 class TextTrainDataset(TextDataset):
-    def __init__(self, text_data, ngram, TEXT, rate) -> None:
-        super().__init__(text_data, ngram, TEXT)
+    def __init__(self, text_data, ngram, tokeniser, rate) -> None:
+        super().__init__(text_data, ngram, tokeniser)
         self.pdist = Poisson(rate=rate)
         self.ngram = ngram
         self.ds = calc_dn(ngram)
@@ -110,8 +101,8 @@ class TextTrainDataset(TextDataset):
 
 
 class TextEvalDataset(TextDataset):
-    def __init__(self, text_data, ngram, TEXT) -> None:
-        super().__init__(text_data, ngram, TEXT)
+    def __init__(self, text_data, ngram, tokeniser) -> None:
+        super().__init__(text_data, ngram, tokeniser)
         ds = calc_dn(ngram)
         perms = []
         for i in range(len(self)):
@@ -121,3 +112,22 @@ class TextEvalDataset(TextDataset):
     def __getitem__(self, index: int):
         perm = self.perms[index]
         return self.data[index, perm], perm
+
+
+class WikiText(object):
+    def __init__(self, data_path):
+        super(WikiText, self).__init__()
+        self.lines = []
+        with open(data_path, "r") as file_hdl:
+            for line in tqdm.tqdm(file_hdl, desc="Reading data"):
+                if not line or line.startswith("["):
+                    continue
+                self.lines.append(line.strip("\r\n"))
+
+    def splits(self, train_split=0.6, val_split=0.2):
+        last_train = int(len(self) * train_split)
+        last_val = last_train + int(len(self) * val_split)
+        return self.lines[:last_train], self.lines[last_train:last_val], self.lines[last_val:]
+
+    def __len__(self):
+        return len(self.lines)

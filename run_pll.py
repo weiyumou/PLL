@@ -1,27 +1,30 @@
 import argparse
+import json
 import logging
 import os
 import random
 import time
-import json
 
 import numpy as np
 import torch
-import torch.optim as optim
-import torchtext
 from torch.utils.data import DataLoader
-from torchtext.data.utils import get_tokenizer
+from transformers import BertTokenizer, BertConfig
 
-from data import TextTrainDataset, TextEvalDataset
-from models import TransformerModel
+from data import TextTrainDataset, TextEvalDataset, WikiText
+from models import BertForPLL
+from radam import RAdam
 from train import train_pll, eval_pll
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description='PPL')
-    parser.add_argument('--data_dir',
+    parser.add_argument('--data_file',
                         type=str,
                         help='Path to the data folder',
+                        required=True)
+    parser.add_argument('--config_file',
+                        type=str,
+                        help='Path to the config file',
                         required=True)
     parser.add_argument('--deterministic',
                         help='Whether to set random seeds',
@@ -38,26 +41,6 @@ def parse_args():
                         type=int,
                         help='Val batch size for SL',
                         default=128)
-    parser.add_argument('--em_size',
-                        type=int,
-                        help='Size of the embeddings',
-                        default=256)
-    parser.add_argument('--num_heads',
-                        type=int,
-                        help='Number of heads in the MultiheadAttention',
-                        default=4)
-    parser.add_argument('--hid_size',
-                        type=int,
-                        help='Size of the hidden states',
-                        default=128)
-    parser.add_argument('--num_layers',
-                        type=int,
-                        help='Number of TransformerEncoders',
-                        default=4)
-    parser.add_argument('--ngram',
-                        type=int,
-                        help='Number of words in a segment',
-                        default=9)
     parser.add_argument('--learn_prd',
                         type=int,
                         help='Number of epochs before providing harder examples',
@@ -107,38 +90,42 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     args.gpu = 0
 
-    TEXT = torchtext.data.Field(tokenize=get_tokenizer("basic_english"),
-                                init_token='<sos>',
-                                eos_token='<eos>',
-                                lower=False)
-    train_txt, val_txt, test_txt = torchtext.datasets.WikiText2.splits(TEXT, root=args.data_dir)
-    TEXT.build_vocab(train_txt)
+    wiki_text = WikiText(args.data_file)
+    train_txt, val_txt, test_txt = wiki_text.splits()
 
-    model = TransformerModel(len(TEXT.vocab.stoi), args.em_size,
-                             args.num_heads, args.hid_size, args.num_layers).to(device)
-    optimiser = optim.Adam(model.parameters())
+    tokeniser = BertTokenizer.from_pretrained('bert-base-cased')
+    with open(args.config_file, "r", encoding='utf-8') as reader:
+        json_config = json.loads(reader.read())
+    json_config["vocab_size_or_config_json_file"] = tokeniser.vocab_size
+    args.ngram = json_config["max_position_embeddings"]
+    bert_config = BertConfig(**json_config)
+
+    model = BertForPLL(bert_config)
+    model = torch.nn.DataParallel(model).to(device)
+    optimiser = RAdam(model.parameters())
 
     if args.eval:
-        dataloaders = {"test": DataLoader(TextEvalDataset(test_txt, args.ngram, TEXT),
+        dataloaders = {"test": DataLoader(TextEvalDataset(test_txt, args.ngram, tokeniser),
                                           batch_size=args.eval_batch_size,
                                           shuffle=False)}
         if args.resume:
             resume(model, args)
 
         test_loss, test_acc = eval_pll(device, model, dataloaders["test"], args)
-        args.logger.info(f"Eval: Test Loss = {test_loss}, Test Acc = {test_acc}")
+        logger.info(f"Eval: Test Loss = {test_loss}, Test Acc = {test_acc}")
     else:
         dataloaders = {
-            "train": DataLoader(TextTrainDataset(train_txt, args.ngram, TEXT, args.poisson_rate),
+            "train": DataLoader(TextTrainDataset(train_txt, args.ngram, tokeniser, args.poisson_rate),
                                 batch_size=args.train_batch_size,
                                 shuffle=False),
-            "val": DataLoader(TextEvalDataset(val_txt, args.ngram, TEXT),
+            "val": DataLoader(TextEvalDataset(val_txt, args.ngram, tokeniser),
                               batch_size=args.eval_batch_size,
                               shuffle=False),
-            "test": DataLoader(TextEvalDataset(test_txt, args.ngram, TEXT),
+            "test": DataLoader(TextEvalDataset(test_txt, args.ngram, tokeniser),
                                batch_size=args.eval_batch_size,
                                shuffle=False)
         }
+
         args.start_epoch = 0
         args.best_acc = 1 / args.ngram
         if args.resume:

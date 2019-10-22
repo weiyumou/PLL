@@ -17,7 +17,7 @@ def train_pll(device, model, optimiser, dataloaders, args):
         running_loss, loss_total = 0, 0
         model.train()
         for inputs, perms in tqdm.tqdm(dataloaders["train"], desc="Training"):
-            inputs = inputs.permute(1, 0).to(device)  # (S, N)
+            inputs = inputs.to(device)  # (N, S)
             labels = torch.exp(gm_dist.log_prob(perms.float())).to(device)  # (N, S)
 
             # Forward
@@ -65,7 +65,7 @@ def eval_pll(device, model, dataloader, args):
     running_corrects, accuracy_total = 0, 0
 
     for inputs, perms in tqdm.tqdm(dataloader, desc="Evaluating"):
-        inputs = inputs.permute(1, 0).to(device)  # (S, N)
+        inputs = inputs.to(device)  # (N, S)
         labels = torch.exp(gm_dist.log_prob(perms.float())).to(device)  # (N, S)
         with torch.no_grad():
             outputs = model(inputs)  # (N, S)
