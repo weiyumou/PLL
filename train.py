@@ -15,25 +15,37 @@ def train_pll(device, model, optimiser, dataloaders, args):
 
     for epoch in range(args.start_epoch, args.num_epochs):
         running_loss, loss_total = 0, 0
+        # running_corrects, accuracy_total = 0, 0
         model.train()
         for inputs, perms in tqdm.tqdm(dataloaders["train"], desc="Training"):
             inputs = inputs.permute(1, 0).to(device)  # (S, N)
             labels = torch.exp(gm_dist.log_prob(perms.float())).to(device)  # (N, S)
 
             # Forward
+            optimiser.zero_grad()
             outputs = model(inputs)  # (N, S)
             outputs = torch.log_softmax(outputs.permute(1, 0), dim=-1)
             loss = criterion(outputs, labels)
 
             # Backward
-            optimiser.zero_grad()
             loss.backward()
+            nn.utils.clip_grad_norm_(model.parameters(), 0.5)
             optimiser.step()
             running_loss += loss.item() * labels.size(0)
             loss_total += labels.size(0)
 
+            # indices = torch.argsort(outputs, dim=-1, descending=True)
+            # ranks = torch.arange(args.ngram, device=device).expand_as(indices)
+            # preds = torch.empty_like(indices).scatter_(1, indices, ranks).cpu()
+            # running_corrects += torch.sum(preds == perms).item()
+            # accuracy_total += perms.numel()
+            # break
+
         train_loss = running_loss / loss_total
+        # train_acc = running_corrects / accuracy_total
         args.logger.info(f"Epoch {epoch}: Train Loss = {train_loss}")
+        # writer.add_scalars("Loss", {"train_loss": train_loss}, epoch)
+        # writer.add_scalars("Accuracy", {"train_acc": train_acc}, epoch)
 
         val_loss, val_acc = eval_pll(device, model, dataloaders["val"], args)
         args.logger.info(f"Epoch {epoch}: Val Loss = {val_loss}, Val Acc = {val_acc}")

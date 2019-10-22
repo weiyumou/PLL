@@ -15,6 +15,8 @@ from torchtext.data.utils import get_tokenizer
 from data import TextTrainDataset, TextEvalDataset
 from models import TransformerModel
 from train import train_pll, eval_pll
+from ranger import Ranger
+from radam import RAdam
 
 
 def parse_args():
@@ -116,8 +118,10 @@ def main():
 
     model = TransformerModel(len(TEXT.vocab.stoi), args.em_size,
                              args.num_heads, args.hid_size, args.num_layers).to(device)
-    model = torch.nn.DataParallel(model, dim=1)
-    optimiser = optim.Adam(model.parameters())
+    # model = torch.nn.DataParallel(model, dim=1)
+    # optimiser = optim.Adam(model.parameters())
+    # optimiser = Ranger(model.parameters())
+    optimiser = RAdam(model.parameters())
 
     if args.eval:
         dataloaders = {"test": DataLoader(TextEvalDataset(test_txt, args.ngram, TEXT),
