@@ -91,11 +91,10 @@ def main():
 
     wiki_reader = WikiReader(args.data_file, args.num_lines, args.max_seq_len, args.do_lower)
     wiki_reader.split()
-    wiki_reader.build_vocab()
-    vocab_size = len(wiki_reader.word_to_idx)
+    vocab_size = wiki_reader.vocab_size
 
-    train_dataset = WikiTrainDataset(wiki_reader.train_set, wiki_reader.word_to_idx, args.max_seq_len, args.init_pr)
-    val_dataset = WikiEvalDataset(wiki_reader.val_set, wiki_reader.word_to_idx, args.max_seq_len, args.final_pr)
+    train_dataset = WikiTrainDataset(wiki_reader.train_set, args.max_seq_len, args.init_pr)
+    val_dataset = WikiEvalDataset(wiki_reader.val_set, args.max_seq_len, args.final_pr)
     dataloaders = {
         "train": DataLoader(train_dataset, batch_size=args.train_batch_size, shuffle=True),
         "val": DataLoader(val_dataset, batch_size=args.eval_batch_size, shuffle=False)
