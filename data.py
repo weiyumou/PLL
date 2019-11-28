@@ -95,17 +95,17 @@ class WikiDataset(Dataset):
         self.tokeniser = tokeniser
         self.max_seq_len = max_seq_len
 
-    @staticmethod
-    def _split_to_segs(sentence, num_segs):
+    def _split_to_segs(self, sentence, num_segs):
+        max_seq_len = self.max_seq_len - num_segs - 1  # account for [CLS] and [SEP]
+        while len(self.tokeniser.tokenize(" ".join(sentence))) > max_seq_len:
+            sentence.pop()
         seq_len = len(sentence)
         seg_lens = [seq_len // num_segs] * num_segs
         rand_inds = random.sample(range(num_segs), seq_len % num_segs)
         for idx in rand_inds:
             seg_lens[idx] += 1
-        seg_inds = itertools.accumulate(seg_lens)
-        sent_segs = []
-        last_idx = 0
-        for idx in seg_inds:
+        sent_segs, last_idx = [], 0
+        for idx in itertools.accumulate(seg_lens):
             sent_segs.append(sentence[last_idx: idx])
             last_idx = idx
         return sent_segs
@@ -118,10 +118,10 @@ class WikiDataset(Dataset):
         for idx, seg in enumerate(sent_segs):
             tok_ids = self.tokeniser.encode(" ".join(seg + ["[SEP]"]), add_special_tokens=False)
             token_ids.extend(tok_ids)
-            seg_ids.append(torch.full((len(tok_ids),), idx, dtype=torch.long))
+            seg_ids.extend([idx] * len(tok_ids))
 
         token_ids = torch.tensor(token_ids)
-        seg_ids = torch.cat(seg_ids, dim=0)
+        seg_ids = torch.tensor(seg_ids)
         mask = torch.ones_like(token_ids, dtype=torch.long)
 
         token_ids = torch.nn.functional.pad(token_ids, [0, self.max_seq_len - token_ids.size(0)])
@@ -136,15 +136,14 @@ class WikiDataset(Dataset):
 
 
 class WikiTrainDataset(WikiDataset):
-    def __init__(self, train_data, tokeniser, max_seq_len, init_rate, num_segs, max_num_segs):
+    def __init__(self, train_data, tokeniser, max_seq_len, rate, num_segs, max_num_segs):
         super(WikiTrainDataset, self).__init__(train_data, tokeniser, max_seq_len)
-        self.pdist = Poisson(rate=init_rate)
+        self.pdist = Poisson(rate=rate)
         self.num_segs = num_segs
         self.ds = calc_dn(max_num_segs)
 
     def __getitem__(self, index: int):
-        max_seq_len = self.max_seq_len - self.num_segs - 1  # account for [CLS] and [SEP]
-        sentence = self.data[index][:max_seq_len]
+        sentence = self.data[index]
         sent_segs = self._split_to_segs(sentence, self.num_segs)
 
         k = self.pdist.sample().int().item()
@@ -159,18 +158,25 @@ class WikiTrainDataset(WikiDataset):
 
 
 class WikiEvalDataset(WikiDataset):
-    def __init__(self, eval_data, tokeniser, max_seq_len, max_num_segs):
+    def __init__(self, eval_data, tokeniser, max_seq_len, num_segs, max_num_segs):
         super(WikiEvalDataset, self).__init__(eval_data, tokeniser, max_seq_len)
-        pdist = Poisson(rate=max_num_segs)
-        ds = calc_dn(max_num_segs)
+        self.pdist = Poisson(rate=num_segs * 2)
+        self.num_segs = num_segs
+        self.ds = calc_dn(max_num_segs)
         self.sent_segs, self.perms = dict(), dict()
-        for idx, sentence in enumerate(self.data):
-            max_seq_len = max_seq_len - max_num_segs - 1  # account for [CLS] and [SEP]
-            sentence = sentence[:max_seq_len]
-            self.sent_segs[idx] = self._split_to_segs(sentence, max_num_segs)
-            k = pdist.sample().int().item()
-            self.perms[idx] = k_permute(max_num_segs, k, ds)
+        self.generate_data()
 
     def __getitem__(self, index: int):
         sent_segs, perm = self.sent_segs[index], self.perms[index]
         return self._prep_inputs(sent_segs, perm)
+
+    def generate_data(self):
+        for idx, sentence in enumerate(self.data):
+            self.sent_segs[idx] = self._split_to_segs(sentence, self.num_segs)
+            k = self.pdist.sample().int().item()
+            self.perms[idx] = k_permute(self.num_segs, k, self.ds)
+
+    def set_num_segs(self, num_segs):
+        self.num_segs = num_segs
+        self.pdist = Poisson(rate=num_segs * 2)
+        self.generate_data()

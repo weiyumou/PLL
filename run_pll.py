@@ -7,11 +7,11 @@ import time
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
-from torch.utils.data import RandomSampler, DistributedSampler
+from torch.utils.data import RandomSampler, DistributedSampler, SequentialSampler
 from transformers import BertConfig, BertForSequenceClassification, BertTokenizer
 
 import train
-from data import WikiReader, WikiTrainDataset
+from data import WikiReader, WikiTrainDataset, WikiEvalDataset
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +62,10 @@ def parse_args():
                         default=None)
     parser.add_argument("--per_gpu_train_batch_size", default=128, type=int,
                         help="Batch size per GPU/CPU for training.")
+    parser.add_argument("--per_gpu_eval_batch_size",
+                        type=int,
+                        help="Batch size per GPU/CPU for evaluation",
+                        default=128)
     parser.add_argument("--gradient_accumulation_steps", type=int, default=1,
                         help="Number of updates steps to accumulate before performing a backward/update pass.")
     parser.add_argument("--max_grad_norm", default=1.0, type=float,
@@ -91,6 +95,9 @@ def main():
         args.resume = resume
 
     # Setup CUDA, GPU & distributed training
+    args.distributed = False
+    if 'WORLD_SIZE' in os.environ:
+        args.distributed = int(os.environ['WORLD_SIZE']) > 1
     if args.local_rank == -1:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         args.n_gpu = torch.cuda.device_count()
@@ -99,7 +106,7 @@ def main():
         device = torch.device("cuda", args.local_rank)
         torch.distributed.init_process_group(backend="nccl")
         args.n_gpu = 1
-    args.device = device
+        args.world_size = torch.distributed.get_world_size()
 
     if args.deterministic:
         random.seed(0)
@@ -148,22 +155,25 @@ def main():
     if args.local_rank == 0:
         torch.distributed.barrier()  # Make sure only the first process in distributed training will download model & vocab
 
-    model.to(args.device)
+    model.to(device)
     logger.info("Training/evaluation parameters %s", args)
 
     wiki_reader = WikiReader(args.data_file, args.num_lines)
-    # wiki_reader.split(train_perct=0.9)
+    wiki_reader.split(train_perct=0.8)
 
-    train_dataset = WikiTrainDataset(wiki_reader.sentences, tokeniser,
+    train_dataset = WikiTrainDataset(wiki_reader.train_set, tokeniser,
                                      args.max_seq_len, args.init_pr,
                                      args.num_segs, args.max_num_segs)
-    # val_dataset = WikiEvalDataset(wiki_reader.val_set, tokeniser, args.max_seq_len, args.max_num_segs)
+    val_dataset = WikiEvalDataset(wiki_reader.val_set, tokeniser,
+                                  args.max_seq_len,  args.num_segs, args.max_num_segs)
 
     args.train_batch_size = args.per_gpu_train_batch_size * max(1, args.n_gpu)
+    args.eval_batch_size = args.per_gpu_eval_batch_size * max(1, args.n_gpu)
     train_sampler = RandomSampler(train_dataset) if args.local_rank == -1 else DistributedSampler(train_dataset)
+    eval_sampler = SequentialSampler(val_dataset) if args.local_rank == -1 else DistributedSampler(val_dataset)
     dataloaders = {
         "train": DataLoader(train_dataset, sampler=train_sampler, batch_size=args.train_batch_size),
-        # "val": DataLoader(val_dataset, batch_size=args.eval_batch_size, shuffle=False)
+        "val": DataLoader(val_dataset, sampler=eval_sampler, batch_size=args.eval_batch_size)
     }
 
     global_step, tr_loss = train.train_model(device, model, dataloaders, args, logger)

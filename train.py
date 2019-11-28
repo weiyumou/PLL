@@ -4,8 +4,6 @@ import torch
 import tqdm
 from torch.utils.tensorboard import SummaryWriter
 
-from RAdam.radam import RAdam
-
 
 def calc_ranks(x):
     indices = torch.argsort(x, dim=-1, descending=True)
@@ -24,7 +22,7 @@ def train_model(device, model, dataloaders, args, logger):
     else:
         t_total = len(dataloaders["train"]) // args.gradient_accumulation_steps * args.num_epochs
 
-    optimiser = RAdam(model.parameters())
+    optimiser = torch.optim.Adam(model.parameters())
     criterion = torch.nn.CrossEntropyLoss()
 
     # Apex
@@ -55,20 +53,22 @@ def train_model(device, model, dataloaders, args, logger):
     logger.info("  Gradient Accumulation steps = %d", args.gradient_accumulation_steps)
     logger.info("  Total optimization steps = %d", t_total)
 
-    curr_num_steps, global_step = 0, 0
+    curr_steps, global_step = 0, 0
     num_segs = args.num_segs
     tr_loss, logging_loss = 0.0, 0.0
-    model.zero_grad()
+    running_corrects, acc_total = 0, 0
+
     if args.resume is not None:
         checkpoint = torch.load(os.path.join(args.resume, "states.bin"))
         optimiser.load_state_dict(checkpoint["optimiser_state_dict"])
-        curr_num_steps, global_step = checkpoint["curr_num_steps"], checkpoint["global_step"]
+        curr_steps, global_step = checkpoint["curr_steps"], checkpoint["global_step"]
         num_segs = checkpoint["num_segs"]
+
+    model.train()
+    model.zero_grad()
     train_iterator = tqdm.trange(args.num_epochs, desc="Epoch", disable=args.local_rank not in [-1, 0])
     for _ in train_iterator:
-        model.train()
         epoch_iterator = tqdm.tqdm(dataloaders["train"], desc="Iteration", disable=args.local_rank not in [-1, 0])
-        running_corrects, acc_total = 0, 0
         for step, batch in enumerate(epoch_iterator):
             input_ids, seg_ids, att_masks, perms = batch
             input_ids = input_ids.to(device)
@@ -77,9 +77,7 @@ def train_model(device, model, dataloaders, args, logger):
             labels = torch.flatten(perms).to(device)
 
             outputs, *_ = model(input_ids=input_ids, attention_mask=att_masks, token_type_ids=seg_ids)
-            outputs = outputs.reshape(-1, args.max_num_segs, args.max_num_segs)[:, :num_segs, :num_segs].reshape(-1,
-                                                                                                                 num_segs)
-
+            outputs = outputs[:, :num_segs ** 2].reshape(-1, num_segs)
             loss = criterion(outputs, labels)
             if args.n_gpu > 1:
                 loss = loss.mean()  # mean() to average on multi-gpu parallel training
@@ -93,10 +91,9 @@ def train_model(device, model, dataloaders, args, logger):
                 loss.backward()
             tr_loss += loss.item()
 
-            if args.local_rank in [-1, 0]:
-                preds = torch.argmax(outputs, dim=-1)
-                running_corrects += torch.sum(preds == labels).item()
-                acc_total += labels.numel()
+            preds = torch.argmax(outputs, dim=-1)
+            running_corrects += torch.sum(preds == labels).item()
+            acc_total += labels.numel()
 
             if (step + 1) % args.gradient_accumulation_steps == 0:
                 if args.fp16:
@@ -107,21 +104,33 @@ def train_model(device, model, dataloaders, args, logger):
                 optimiser.step()
                 model.zero_grad()
                 global_step += 1
-                curr_num_steps += 1
+                curr_steps += 1
 
-                if args.local_rank in [-1, 0] and args.logging_steps > 0 and global_step % args.logging_steps == 0:
-                    train_acc = running_corrects / acc_total
-                    loss = (tr_loss - logging_loss) / args.logging_steps
-                    tb_writer.add_scalar("Train_Acc", train_acc, global_step)
-                    tb_writer.add_scalar("Train_Loss", loss, global_step)
-                    tb_writer.add_scalar("Num_Segs", num_segs, global_step)
+                if args.logging_steps > 0 and global_step % args.logging_steps == 0:
+                    train_acc = torch.tensor([running_corrects / acc_total]).to(device)
+                    train_loss = torch.tensor([(tr_loss - logging_loss) / args.logging_steps]).to(device)
+                    val_loss, val_acc = eval_model(device, model, dataloaders["val"], num_segs)
+                    if args.distributed:
+                        train_loss = mean_reduce(train_loss, args.world_size)
+                        train_acc = mean_reduce(train_acc, args.world_size)
+                        val_loss = mean_reduce(val_loss, args.world_size)
+                        val_acc = mean_reduce(val_acc, args.world_size)
                     logging_loss = tr_loss
+                    running_corrects, acc_total = 0, 0
+                    if args.local_rank in [-1, 0]:
+                        tb_writer.add_scalar("Train_Acc", train_acc, global_step)
+                        tb_writer.add_scalar("Train_Loss", train_loss, global_step)
+                        tb_writer.add_scalar("Num_Segs", num_segs, global_step)
+                        tb_writer.add_scalar("Val_Acc", val_acc, global_step)
+                        tb_writer.add_scalar("Val_Loss", val_loss, global_step)
 
-                if args.local_rank in [-1, 0] and curr_num_steps == num_segs * args.learn_prd and num_segs < args.max_num_segs:
-                    curr_num_steps = 0
+                if all([args.local_rank in [-1, 0], curr_steps == num_segs * args.learn_prd,
+                        num_segs < args.max_num_segs]):
+                    curr_steps = 0
                     num_segs += 1
                     dataloaders["train"].dataset.set_num_segs(num_segs)
                     dataloaders["train"].dataset.set_poisson_rate(num_segs)
+                    dataloaders["val"].dataset.set_num_segs(num_segs)
 
                 if args.local_rank in [-1, 0] and args.save_steps > 0 and global_step % args.save_steps == 0:
                     # Save model checkpoint
@@ -134,7 +143,7 @@ def train_model(device, model, dataloaders, args, logger):
                         {"optimiser_state_dict": optimiser.state_dict(),
                          "global_step": global_step,
                          "num_segs": num_segs,
-                         "curr_num_steps": curr_num_steps}, os.path.join(output_dir, "states.bin"))
+                         "curr_steps": curr_steps}, os.path.join(output_dir, "states.bin"))
                     logger.info(f"Saving model checkpoint to {output_dir}")
 
             if 0 < args.max_steps < global_step:
@@ -148,28 +157,37 @@ def train_model(device, model, dataloaders, args, logger):
     return global_step, tr_loss / global_step
 
 
-def eval_model(device, model, dataloader, num_segs, max_num_segs):
-    model = model.to(device).eval()
+def eval_model(device, model, dataloader, num_segs):
+    model.eval()
     criterion = torch.nn.CrossEntropyLoss()
 
     running_loss, loss_total = 0, 0
     running_corrects, acc_total = 0, 0
-    with torch.no_grad():
-        for input_ids, seg_ids, att_masks, perms in tqdm.tqdm(dataloader, desc="Evaluating"):
-            input_ids = input_ids.to(device)
-            seg_ids = seg_ids.to(device)
-            att_masks = att_masks.to(device)
-            labels = torch.flatten(perms).to(device)
 
+    for input_ids, seg_ids, att_masks, perms in tqdm.tqdm(dataloader, desc="Evaluating"):
+        input_ids = input_ids.to(device)
+        seg_ids = seg_ids.to(device)
+        att_masks = att_masks.to(device)
+        labels = torch.flatten(perms).to(device)
+
+        with torch.no_grad():
             outputs, *_ = model(input_ids=input_ids, attention_mask=att_masks, token_type_ids=seg_ids)
-            outputs = outputs.reshape(-1, max_num_segs, max_num_segs)[:, :num_segs, :num_segs].reshape(-1, num_segs)
+            outputs = outputs[:, :num_segs ** 2].reshape(-1, num_segs)
             loss = criterion(outputs, labels)
 
-            preds = torch.argmax(outputs, dim=-1)
-            running_corrects += torch.sum(preds == labels).item()
-            acc_total += labels.numel()
-            running_loss += loss.item() * labels.numel()
-            loss_total += labels.numel()
+        preds = torch.argmax(outputs, dim=-1)
+        running_corrects += torch.sum(preds == labels).item()
+        acc_total += labels.numel()
+        running_loss += loss.item() * labels.numel()
+        loss_total += labels.numel()
 
     eval_loss, eval_acc = running_loss / loss_total, running_corrects / acc_total
-    return eval_loss, eval_acc
+    model.train()
+    return torch.tensor([eval_loss], device=device), torch.tensor([eval_acc], device=device)
+
+
+def mean_reduce(tensor, world_size):
+    rt = tensor.clone()
+    torch.distributed.all_reduce(rt, op=torch.distributed.ReduceOp.SUM)
+    rt /= world_size
+    return rt
