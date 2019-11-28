@@ -112,10 +112,10 @@ def train_model(device, model, dataloaders, args, logger):
                 if args.local_rank in [-1, 0] and args.logging_steps > 0 and global_step % args.logging_steps == 0:
                     train_acc = running_corrects / acc_total
                     loss = (tr_loss - logging_loss) / args.logging_steps
-                    tb_writer.add_scalar("train_acc", train_acc, global_step)
-                    tb_writer.add_scalar("loss", loss, global_step)
+                    tb_writer.add_scalar("Train_Acc", train_acc, global_step)
+                    tb_writer.add_scalar("Train_Loss", loss, global_step)
+                    tb_writer.add_scalar("Num_Segs", num_segs, global_step)
                     logging_loss = tr_loss
-                    logger.info(f"\nStep {global_step}: Train Acc = {train_acc}, Train Loss = {loss}")
 
                 if args.local_rank in [-1, 0] and curr_num_steps == num_segs * args.learn_prd and num_segs < args.max_num_segs:
                     curr_num_steps = 0

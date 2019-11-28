@@ -17,72 +17,64 @@ logger = logging.getLogger(__name__)
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description='PPL')
-    parser.add_argument('--deterministic',
-                        help='Whether to set random seeds',
+    parser = argparse.ArgumentParser(description="PPL")
+    parser.add_argument("--deterministic",
+                        help="Whether to set random seeds",
                         action="store_true")
-    parser.add_argument('--data_file',
+    parser.add_argument("--data_file",
                         type=str,
-                        help='Path to the data file',
+                        help="Path to the data file",
                         required=True)
-    parser.add_argument('--num_lines',
+    parser.add_argument("--num_lines",
                         type=int,
-                        help='Number of lines to read',
+                        help="Number of lines to read",
                         default=-1)
-    parser.add_argument('--max_seq_len',
+    parser.add_argument("--max_seq_len",
                         type=int,
-                        help='Maximum sequence length',
+                        help="Maximum sequence length",
                         default=64)
-    parser.add_argument('--num_segs',
+    parser.add_argument("--num_segs",
                         type=int,
-                        help='Number of segments',
+                        help="Number of segments",
                         default=-1)
-    parser.add_argument('--max_num_segs',
+    parser.add_argument("--max_num_segs",
                         type=int,
-                        help='Maximum number of segments',
+                        help="Maximum number of segments",
                         default=64)
-    parser.add_argument('--num_epochs',
+    parser.add_argument("--num_epochs",
                         type=int,
-                        help='Number of epochs',
+                        help="Number of epochs",
                         default=30)
-    parser.add_argument('--train_batch_size',
+    parser.add_argument("--init_pr",
                         type=int,
-                        help='Train batch size for SL',
-                        default=128)
-    parser.add_argument('--eval_batch_size',
-                        type=int,
-                        help='Val batch size for SL',
-                        default=128)
-    parser.add_argument('--init_pr',
-                        type=int,
-                        help='The initial poisson rate lambda',
+                        help="The initial poisson rate lambda",
                         default=2)
-    parser.add_argument('--learn_prd',
+    parser.add_argument("--learn_prd",
                         type=int,
-                        help='Number of steps before providing harder examples',
+                        help="Number of steps before providing harder examples",
                         default=1000)
-    parser.add_argument('--eval',
-                        help='Whether to evaluate the model',
+    parser.add_argument("--eval",
+                        help="Whether to evaluate the model",
                         action="store_true")
-    parser.add_argument('--resume',
+    parser.add_argument("--resume",
                         type=str,
-                        help='Path to a saved checkpoint',
+                        help="Path to a saved checkpoint",
                         default=None)
-    parser.add_argument("--per_gpu_train_batch_size", default=8, type=int,
+    parser.add_argument("--per_gpu_train_batch_size", default=128, type=int,
                         help="Batch size per GPU/CPU for training.")
-    parser.add_argument('--gradient_accumulation_steps', type=int, default=1,
+    parser.add_argument("--gradient_accumulation_steps", type=int, default=1,
                         help="Number of updates steps to accumulate before performing a backward/update pass.")
     parser.add_argument("--max_grad_norm", default=1.0, type=float,
                         help="Max gradient norm.")
     parser.add_argument("--max_steps", default=-1, type=int,
                         help="If > 0: set total number of training steps to perform. Override num_train_epochs.")
-    parser.add_argument('--logging_steps', type=int, default=50,
+    parser.add_argument("--logging_steps", type=int, default=50,
                         help="Log every X updates steps.")
-    parser.add_argument('--save_steps', type=int, default=50,
+    parser.add_argument("--save_steps", type=int, default=50,
                         help="Save checkpoint every X updates steps.")
-    parser.add_argument('--fp16', action='store_true',
+    parser.add_argument("--fp16", action="store_true",
                         help="Whether to use 16-bit (mixed) precision (through NVIDIA apex) instead of 32-bit")
-    parser.add_argument('--fp16_opt_level', type=str, default='O1',
+    parser.add_argument("--fp16_opt_level", type=str, default="O1",
                         help="For fp16: Apex AMP optimization level selected in ['O0', 'O1', 'O2', and 'O3']."
                              "See details at https://nvidia.github.io/apex/amp.html")
     parser.add_argument("--local_rank", type=int, default=-1,
@@ -105,7 +97,7 @@ def main():
     else:  # Initializes the distributed backend which will take care of sychronizing nodes/GPUs
         torch.cuda.set_device(args.local_rank)
         device = torch.device("cuda", args.local_rank)
-        torch.distributed.init_process_group(backend='nccl')
+        torch.distributed.init_process_group(backend="nccl")
         args.n_gpu = 1
     args.device = device
 
@@ -118,8 +110,8 @@ def main():
             torch.cuda.manual_seed_all(0)
 
     # Setup logging
-    logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
-                        datefmt='%m/%d/%Y %H:%M:%S',
+    logging.basicConfig(format="%(asctime)s - %(levelname)s - %(name)s -   %(message)s",
+                        datefmt="%m/%d/%Y %H:%M:%S",
                         level=logging.INFO if args.local_rank in [-1, 0] else logging.WARN)
     logger.warning("Process rank: %s, device: %s, n_gpu: %s, distributed training: %s, 16-bits training: %s",
                    args.local_rank, device, args.n_gpu, bool(args.local_rank != -1), args.fp16)
@@ -128,7 +120,8 @@ def main():
         torch.distributed.barrier()  # Make sure only the first process in distributed training will download model & vocab
 
     args.output_dir = os.path.join("models", time.ctime().replace(" ", "_").replace(":", "_"))
-    os.makedirs(args.output_dir, exist_ok=True)
+    if args.local_rank in [-1, 0]:
+        os.makedirs(args.output_dir, exist_ok=True)
 
     tokeniser = BertTokenizer.from_pretrained("bert-base-cased")
     if args.resume is not None:
@@ -176,6 +169,11 @@ def main():
     global_step, tr_loss = train.train_model(device, model, dataloaders, args, logger)
     logger.info(" global_step = %s, average loss = %s", global_step, tr_loss)
 
+    logger.info("Saving model checkpoint to %s", args.output_dir)
+    model_to_save = model.module if hasattr(model, "module") else model  # Take care of distributed/parallel training
+    model_to_save.save_pretrained(args.output_dir)
+    torch.save(args, os.path.join(args.output_dir, "training_args.bin"))
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()
