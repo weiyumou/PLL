@@ -5,13 +5,6 @@ import tqdm
 from torch.utils.tensorboard import SummaryWriter
 
 
-def calc_ranks(x):
-    indices = torch.argsort(x, dim=-1, descending=True)
-    ranks = torch.arange(indices.size(1), device=x.device).expand_as(indices)
-    preds = torch.empty_like(indices).scatter_(1, indices, ranks)
-    return preds
-
-
 def train_model(device, model, dataloaders, args, logger):
     if args.local_rank in [-1, 0]:
         tb_writer = SummaryWriter()

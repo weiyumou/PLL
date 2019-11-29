@@ -125,12 +125,14 @@ def main():
 
     if args.local_rank not in [-1, 0]:
         torch.distributed.barrier()  # Make sure only the first process in distributed training will download model & vocab
+    tokeniser = BertTokenizer.from_pretrained("bert-base-cased")
+    if args.local_rank == 0:
+        torch.distributed.barrier()  # Make sure only the first process in distributed training will download model & vocab
 
     args.output_dir = os.path.join("models", time.ctime().replace(" ", "_").replace(":", "_"))
     if args.local_rank in [-1, 0]:
         os.makedirs(args.output_dir, exist_ok=True)
 
-    tokeniser = BertTokenizer.from_pretrained("bert-base-cased")
     if args.resume is not None:
         model = BertForSequenceClassification.from_pretrained(args.resume)
     else:
@@ -152,9 +154,6 @@ def main():
         bert_config = BertConfig(**config_json)
         model = BertForSequenceClassification(bert_config)
 
-    if args.local_rank == 0:
-        torch.distributed.barrier()  # Make sure only the first process in distributed training will download model & vocab
-
     model.to(device)
     logger.info("Training/evaluation parameters %s", args)
 
@@ -165,7 +164,7 @@ def main():
                                      args.max_seq_len, args.init_pr,
                                      args.num_segs, args.max_num_segs)
     val_dataset = WikiEvalDataset(wiki_reader.val_set, tokeniser,
-                                  args.max_seq_len,  args.num_segs, args.max_num_segs)
+                                  args.max_seq_len, args.num_segs, args.max_num_segs)
 
     args.train_batch_size = args.per_gpu_train_batch_size * max(1, args.n_gpu)
     args.eval_batch_size = args.per_gpu_eval_batch_size * max(1, args.n_gpu)
