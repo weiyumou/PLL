@@ -149,7 +149,7 @@ def main():
             "type_vocab_size": args.max_num_segs,
             "initializer_range": 0.02,
             "layer_norm_eps": 1e-12,
-            "num_labels": args.max_num_segs ** 2
+            "num_labels": args.max_num_segs
         }
         bert_config = BertConfig(**config_json)
         model = BertForSequenceClassification(bert_config)

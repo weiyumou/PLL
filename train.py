@@ -2,7 +2,15 @@ import os
 
 import torch
 import tqdm
+from torch.distributions import Geometric
 from torch.utils.tensorboard import SummaryWriter
+
+
+def calc_ranks(x):
+    indices = torch.argsort(x, dim=-1, descending=True)
+    ranks = torch.arange(indices.size(1), device=x.device).expand_as(indices)
+    preds = torch.empty_like(indices).scatter_(1, indices, ranks)
+    return preds
 
 
 def train_model(device, model, dataloaders, args, logger):
@@ -16,7 +24,7 @@ def train_model(device, model, dataloaders, args, logger):
         t_total = len(dataloaders["train"]) // args.gradient_accumulation_steps * args.num_epochs
 
     optimiser = torch.optim.Adam(model.parameters())
-    criterion = torch.nn.CrossEntropyLoss()
+    criterion = torch.nn.KLDivLoss(reduction="batchmean")
 
     # Apex
     if args.fp16:
@@ -50,6 +58,7 @@ def train_model(device, model, dataloaders, args, logger):
     num_segs = args.num_segs
     tr_loss, logging_loss = 0.0, 0.0
     running_corrects, acc_total = 0, 0
+    gm_dist = Geometric(probs=torch.tensor([1 - 1e-5 ** (1 / num_segs)]))
 
     if args.resume is not None:
         checkpoint = torch.load(os.path.join(args.resume, "states.bin"))
@@ -67,10 +76,10 @@ def train_model(device, model, dataloaders, args, logger):
             input_ids = input_ids.to(device)
             seg_ids = seg_ids.to(device)
             att_masks = att_masks.to(device)
-            labels = torch.flatten(perms).to(device)
+            labels = torch.exp(gm_dist.log_prob(perms.float())).float().to(device)
 
             outputs, *_ = model(input_ids=input_ids, attention_mask=att_masks, token_type_ids=seg_ids)
-            outputs = outputs[:, :num_segs ** 2].reshape(-1, num_segs)
+            outputs = torch.log_softmax(outputs[:, :num_segs], dim=-1)
             loss = criterion(outputs, labels)
             if args.n_gpu > 1:
                 loss = loss.mean()  # mean() to average on multi-gpu parallel training
@@ -84,8 +93,8 @@ def train_model(device, model, dataloaders, args, logger):
                 loss.backward()
             tr_loss += loss.item()
 
-            preds = torch.argmax(outputs, dim=-1)
-            running_corrects += torch.sum(preds == labels).item()
+            preds = calc_ranks(outputs).cpu()
+            running_corrects += torch.sum(preds == perms).item()
             acc_total += labels.numel()
 
             if (step + 1) % args.gradient_accumulation_steps == 0:
@@ -124,6 +133,7 @@ def train_model(device, model, dataloaders, args, logger):
                     dataloaders["train"].dataset.set_num_segs(num_segs)
                     dataloaders["train"].dataset.set_poisson_rate(num_segs)
                     dataloaders["val"].dataset.set_num_segs(num_segs)
+                    gm_dist = Geometric(probs=torch.tensor([1 - 1e-5 ** (1 / num_segs)]))
 
                 if args.local_rank in [-1, 0] and args.save_steps > 0 and global_step % args.save_steps == 0:
                     # Save model checkpoint
@@ -152,24 +162,24 @@ def train_model(device, model, dataloaders, args, logger):
 
 def eval_model(device, model, dataloader, num_segs):
     model.eval()
-    criterion = torch.nn.CrossEntropyLoss()
+    criterion = torch.nn.KLDivLoss(reduction="batchmean")
 
     running_loss, loss_total = 0, 0
     running_corrects, acc_total = 0, 0
-
+    gm_dist = Geometric(probs=torch.tensor([1 - 1e-5 ** (1 / num_segs)]))
     for input_ids, seg_ids, att_masks, perms in tqdm.tqdm(dataloader, desc="Evaluating"):
         input_ids = input_ids.to(device)
         seg_ids = seg_ids.to(device)
         att_masks = att_masks.to(device)
-        labels = torch.flatten(perms).to(device)
+        labels = torch.exp(gm_dist.log_prob(perms.float())).float().to(device)
 
         with torch.no_grad():
             outputs, *_ = model(input_ids=input_ids, attention_mask=att_masks, token_type_ids=seg_ids)
-            outputs = outputs[:, :num_segs ** 2].reshape(-1, num_segs)
+            outputs = torch.log_softmax(outputs[:, :num_segs], dim=-1)
             loss = criterion(outputs, labels)
 
-        preds = torch.argmax(outputs, dim=-1)
-        running_corrects += torch.sum(preds == labels).item()
+        preds = calc_ranks(outputs).cpu()
+        running_corrects += torch.sum(preds == perms).item()
         acc_total += labels.numel()
         running_loss += loss.item() * labels.numel()
         loss_total += labels.numel()
