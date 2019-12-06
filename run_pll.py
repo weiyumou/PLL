@@ -158,7 +158,7 @@ def main():
     logger.info("Training/evaluation parameters %s", args)
 
     wiki_reader = WikiReader(args.data_file, args.num_lines)
-    wiki_reader.split(train_perct=0.8)
+    wiki_reader.split(train_perct=0.9)
 
     train_dataset = WikiTrainDataset(wiki_reader.train_set, tokeniser,
                                      args.max_seq_len, args.init_pr,

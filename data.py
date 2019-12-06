@@ -87,12 +87,10 @@ class WikiReader:
                 if num_lines == 0:
                     break
 
-    def split(self, train_perct=0.8):
+    def split(self, train_perct=0.9):
         train_idx = int(train_perct * len(self.docs))
-        val_idx = train_idx + int((1 - train_perct) / 2 * len(self.docs))
         self.train_set = self.docs[:train_idx]
-        self.val_set = self.docs[train_idx: val_idx]
-        self.test_set = self.docs[val_idx:]
+        self.val_set = self.docs[train_idx:]
         self.docs = None
 
 
