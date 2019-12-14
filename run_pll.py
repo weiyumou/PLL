@@ -7,7 +7,7 @@ import time
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
-from torch.utils.data import RandomSampler, DistributedSampler, SequentialSampler
+from torch.utils.data import RandomSampler, DistributedSampler
 from transformers import BertConfig, BertForSequenceClassification, BertTokenizer
 
 import train
@@ -157,23 +157,23 @@ def main():
     model.to(device)
     logger.info("Training/evaluation parameters %s", args)
 
-    wiki_reader = WikiReader(args.data_file, args.num_lines)
+    wiki_reader = WikiReader(args.data_file, 32, args.num_lines)
     wiki_reader.split(train_perct=0.9)
 
     train_dataset = WikiTrainDataset(wiki_reader.train_set, tokeniser,
-                                     args.max_seq_len, args.init_pr,
-                                     args.num_segs, args.max_num_segs)
+                                     args.max_seq_len, args.num_segs, args.init_pr)
     val_dataset = WikiEvalDataset(wiki_reader.val_set, tokeniser,
-                                  args.max_seq_len, args.num_segs, args.max_num_segs)
-
+                                  args.max_seq_len, args.num_segs)
     args.train_batch_size = args.per_gpu_train_batch_size * max(1, args.n_gpu)
     args.eval_batch_size = args.per_gpu_eval_batch_size * max(1, args.n_gpu)
     train_sampler = RandomSampler(train_dataset) if args.local_rank == -1 else DistributedSampler(train_dataset)
-    eval_sampler = SequentialSampler(val_dataset) if args.local_rank == -1 else DistributedSampler(val_dataset)
+    # eval_sampler = SequentialSampler(val_dataset) if args.local_rank == -1 else DistributedSampler(val_dataset)
     dataloaders = {
         "train": DataLoader(train_dataset, sampler=train_sampler, batch_size=args.train_batch_size),
-        "val": DataLoader(val_dataset, sampler=eval_sampler, batch_size=args.eval_batch_size)
+        # "val": DataLoader(val_dataset, sampler=eval_sampler, batch_size=args.eval_batch_size)
     }
+    data_iter = iter(dataloaders["train"])
+    a = next(data_iter)
 
     global_step, tr_loss = train.train_model(device, model, dataloaders, args, logger)
     logger.info(" global_step = %s, average loss = %s", global_step, tr_loss)

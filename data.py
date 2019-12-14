@@ -70,19 +70,22 @@ def is_doc_start(line):
 
 
 class WikiReader:
-    def __init__(self, data_file, num_lines=-1):
+    def __init__(self, data_file, line_per_doc, num_lines=-1):
         self.docs, seq = [], []
+        curr_num_lines = 0
         with open(data_file, "r") as file_hdl:
             for line in tqdm.tqdm(file_hdl, desc="Reading File"):
-                line = line.rstrip("\n\r")
+                line = line.rstrip("\n")
                 if not line:
                     continue
-                if is_doc_start(line):
+                if is_doc_start(line) or curr_num_lines == line_per_doc:
                     if seq:
                         self.docs.append(seq)
                         seq = []
+                        curr_num_lines = 0
                     continue
-                seq.extend(line.split())
+                seq.append(line)
+                curr_num_lines += 1
                 num_lines -= 1
                 if num_lines == 0:
                     break
@@ -95,44 +98,22 @@ class WikiReader:
 
 
 class WikiDataset(Dataset):
-    def __init__(self, docs, tokeniser, max_seq_len):
+    def __init__(self, docs, tokeniser, max_seq_len, num_segs, sents_per_doc):
         super(WikiDataset, self).__init__()
-        self.docs = docs
-        self.doc_token_lens = []
-        for doc in self.docs:
-            token_lens = []
-            for word in doc:
-                tokens = tokeniser.tokenize(word)
-                token_lens.append(len(tokens))
-            self.doc_token_lens.append(token_lens)
+        seq_len = max_seq_len - num_segs - 1
+        self.data = []
+        for doc in docs:
+            self.data.append([tokeniser.tokenize(sent)[:seq_len] for sent in doc])
         self.tokeniser = tokeniser
         self.max_seq_len = max_seq_len
-        self.data = []
+        self.num_segs = num_segs
+        self.ds = calc_dn(num_segs)
+        self.sents_per_doc = sents_per_doc
 
-    def _split_to_sents(self, num_segs):
-        self.data = []
-        max_seq_len = self.max_seq_len - num_segs - 1  # account for [CLS] and [SEP]
-        for doc_idx, doc in tqdm.tqdm(enumerate(self.docs), desc="Splitting Sentences"):
-            last_word_idx, curr_word_idx = 0, 0
-            while last_word_idx < len(doc):
-                cum_len = self.doc_token_lens[doc_idx][last_word_idx]
-                if cum_len > max_seq_len:
-                    curr_word_idx += 1
-                    last_word_idx += 1
-                    continue
-                while cum_len <= max_seq_len:
-                    curr_word_idx += 1
-                    if curr_word_idx >= len(doc):
-                        break
-                    cum_len += self.doc_token_lens[doc_idx][curr_word_idx]
-                self.data.append(doc[last_word_idx: curr_word_idx])
-                last_word_idx = curr_word_idx
-
-    @staticmethod
-    def _split_to_segs(sentence, num_segs):
+    def _split_to_segs(self, sentence):
         seq_len = len(sentence)
-        seg_lens = [seq_len // num_segs] * num_segs
-        rand_inds = random.sample(range(num_segs), seq_len % num_segs)
+        seg_lens = [seq_len // self.num_segs] * self.num_segs
+        rand_inds = random.sample(range(self.num_segs), seq_len % self.num_segs)
         for idx in rand_inds:
             seg_lens[idx] += 1
         sent_segs, last_idx = [], 0
@@ -167,34 +148,38 @@ class WikiDataset(Dataset):
 
 
 class WikiTrainDataset(WikiDataset):
-    def __init__(self, train_data, tokeniser, max_seq_len, rate, num_segs, max_num_segs):
-        super(WikiTrainDataset, self).__init__(train_data, tokeniser, max_seq_len)
+    def __init__(self, train_data, tokeniser, max_seq_len, num_segs, sents_per_doc, rate):
+        super(WikiTrainDataset, self).__init__(train_data, tokeniser, max_seq_len, num_segs, sents_per_doc)
         self.pdist = Poisson(rate=rate)
-        self.num_segs = num_segs
-        self.ds = calc_dn(max_num_segs)
-        self._split_to_sents(num_segs)
 
     def __getitem__(self, index: int):
-        sentence = self.data[index]
-        sent_segs = self._split_to_segs(sentence, self.num_segs)
-        k = self.pdist.sample().int().item()
-        perm = k_permute(self.num_segs, k, self.ds)
-        return self._prep_inputs(sent_segs, perm)
+        doc = []
+        for sentence in self.data[index]:
+            sent_segs = self._split_to_segs(sentence)
+            k = self.pdist.sample().int().item()
+            perm = k_permute(self.num_segs, k, self.ds)
+            doc.append(self._prep_inputs(sent_segs, perm))
+        sent_token_ids, sent_seg_ids, sent_masks, sent_perms = [torch.stack(item) for item in zip(*doc)]
+        doc_mask = torch.ones(sent_token_ids.size(0), dtype=torch.long)
+        num_pads = self.sents_per_doc - sent_token_ids.size(0)
+        sent_token_ids = torch.cat(
+            [sent_token_ids, torch.zeros(num_pads, sent_token_ids.size(-1), dtype=torch.long)], dim=0)
+        sent_seg_ids = torch.cat(
+            [sent_seg_ids, torch.zeros(num_pads, sent_seg_ids.size(-1), dtype=torch.long)], dim=0)
+        sent_masks = torch.cat(
+            [sent_masks, torch.zeros(num_pads, sent_masks.size(-1), dtype=torch.long)], dim=0)
+        sent_perms = torch.cat(
+            [sent_token_ids, torch.zeros(num_pads, sent_perms.size(-1), dtype=torch.long)], dim=0)
+        return sent_token_ids, sent_seg_ids, sent_masks, sent_perms
 
     def set_poisson_rate(self, rate):
         self.pdist = Poisson(rate)
 
-    def set_num_segs(self, num_segs):
-        self.num_segs = num_segs
-        self._split_to_sents(num_segs)
-
 
 class WikiEvalDataset(WikiDataset):
-    def __init__(self, eval_data, tokeniser, max_seq_len, num_segs, max_num_segs):
-        super(WikiEvalDataset, self).__init__(eval_data, tokeniser, max_seq_len)
+    def __init__(self, eval_data, tokeniser, max_seq_len, num_segs):
+        super(WikiEvalDataset, self).__init__(eval_data, tokeniser, max_seq_len, num_segs)
         self.pdist = Poisson(rate=num_segs * 2)
-        self.num_segs = num_segs
-        self.ds = calc_dn(max_num_segs)
         self.sent_segs, self.perms = dict(), dict()
         self.generate_data()
 
@@ -203,13 +188,7 @@ class WikiEvalDataset(WikiDataset):
         return self._prep_inputs(sent_segs, perm)
 
     def generate_data(self):
-        self._split_to_sents(self.num_segs)
         for idx, sentence in enumerate(self.data):
-            self.sent_segs[idx] = self._split_to_segs(sentence, self.num_segs)
+            self.sent_segs[idx] = self._split_to_segs(sentence)
             k = self.pdist.sample().int().item()
             self.perms[idx] = k_permute(self.num_segs, k, self.ds)
-
-    def set_num_segs(self, num_segs):
-        self.num_segs = num_segs
-        self.pdist = Poisson(rate=num_segs * 2)
-        self.generate_data()
