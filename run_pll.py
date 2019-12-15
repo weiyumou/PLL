@@ -144,7 +144,7 @@ def main():
             "num_attention_heads": 3,  # 12
             "intermediate_size": 768,  # 3072
             "hidden_act": "gelu",
-            "hidden_dropout_prob": 0.1,
+            "hidden_dropout_prob": 0.2,
             "attention_probs_dropout_prob": 0.1,
             "max_position_embeddings": args.max_seq_len,
             "type_vocab_size": args.num_segs,
@@ -158,10 +158,10 @@ def main():
             "num_attention_heads": 3,  # 12
             "intermediate_size": 768,  # 3072
             "hidden_act": "gelu",
-            "hidden_dropout_prob": 0.1,
+            "hidden_dropout_prob": 0.2,
             "attention_probs_dropout_prob": 0.1,
             "max_position_embeddings": args.sents_per_doc,
-            "type_vocab_size": args.sents_per_doc,
+            "type_vocab_size": 1,
             "initializer_range": 0.02,
             "layer_norm_eps": 1e-12,
             "num_labels": args.sents_per_doc
@@ -182,8 +182,8 @@ def main():
     train_sampler = RandomSampler(train_dataset) if args.local_rank == -1 else DistributedSampler(train_dataset)
     eval_sampler = SequentialSampler(val_dataset) if args.local_rank == -1 else DistributedSampler(val_dataset)
     dataloaders = {
-        "train": DataLoader(train_dataset, sampler=train_sampler, batch_size=args.train_batch_size),
-        "val": DataLoader(val_dataset, sampler=eval_sampler, batch_size=args.eval_batch_size)
+        "train": DataLoader(train_dataset, sampler=train_sampler, batch_size=args.train_batch_size, pin_memory=True),
+        "val": DataLoader(val_dataset, sampler=eval_sampler, batch_size=args.eval_batch_size, pin_memory=True)
     }
 
     global_step, tr_loss = train.train_model(device, model, dataloaders, args, logger)

@@ -136,7 +136,7 @@ class WikiDataset(Dataset):
 
         token_ids = torch.tensor(token_ids)
         seg_ids = torch.tensor(seg_ids)
-        mask = torch.ones_like(token_ids, dtype=torch.long)
+        mask = torch.ones_like(token_ids, dtype=torch.bool)
 
         token_ids = torch.nn.functional.pad(token_ids, [0, self.max_seq_len - token_ids.size(0)])
         seg_ids = torch.nn.functional.pad(seg_ids, [0, self.max_seq_len - seg_ids.size(0)])
@@ -162,22 +162,12 @@ class WikiTrainDataset(WikiDataset):
             doc.append(self._prep_inputs(sent_segs, perm))
         token_ids, token_seg_ids, token_masks = [torch.stack(item) for item in zip(*doc)]
 
-        # sent_segs_id = torch.arange(self.sents_per_doc, dtype=torch.long)
-        # sent_mask = torch.ones(self.sents_per_doc, dtype=torch.long)
         k = self.sent_pdist.sample().int().item()
         sent_perm = torch.tensor(k_permute(self.sents_per_doc, k, self.sent_ds))
 
         token_ids = token_ids[sent_perm]
         token_seg_ids = token_seg_ids[sent_perm]
         token_masks = token_masks[sent_perm]
-
-        # num_pads = self.sents_per_doc - num_sents
-        # token_ids = torch.nn.functional.pad(token_ids, [0, 0, 0, num_pads])
-        # token_seg_ids = torch.nn.functional.pad(token_seg_ids, [0, 0, 0, num_pads])
-        # token_masks = torch.nn.functional.pad(token_masks, [0, 0, 0, num_pads])
-        # sent_segs_id = torch.nn.functional.pad(sent_segs_id, [0, num_pads])
-        # sent_mask = torch.nn.functional.pad(sent_mask, [0, num_pads])
-        # sent_perm = torch.nn.functional.pad(sent_perm, [0, num_pads])
 
         return token_ids, token_seg_ids, token_masks, sent_perm
 
@@ -197,9 +187,6 @@ class WikiEvalDataset(WikiDataset):
     def __getitem__(self, index: int):
         doc = self.docs[index]
         token_ids, token_seg_ids, token_masks = [torch.stack(item) for item in zip(*doc)]
-
-        # sent_segs_id = torch.arange(self.sents_per_doc, dtype=torch.long)
-        # sent_mask = torch.ones(self.sents_per_doc, dtype=torch.long)
         sent_perm = self.sent_perms[index]
 
         token_ids = token_ids[sent_perm]
