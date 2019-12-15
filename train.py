@@ -42,12 +42,12 @@ def train_model(device, model, dataloaders, args, logger):
     logger.info("  Instantaneous batch size per GPU = %d", args.per_gpu_train_batch_size)
     logger.info("  Total train batch size (w. parallel, distributed & accumulation) = %d",
                 args.train_batch_size * args.gradient_accumulation_steps * (
-                    torch.distributed.get_world_size() if args.local_rank != -1 else 1))
+                    args.world_size if args.local_rank != -1 else 1))
     logger.info("  Gradient Accumulation steps = %d", args.gradient_accumulation_steps)
     logger.info("  Total optimization steps = %d", t_total)
 
     curr_steps, global_step = 0, 0
-    num_segs = args.num_segs
+    # num_segs = args.num_segs
     tr_loss, logging_loss = 0.0, 0.0
     running_corrects, acc_total = 0, 0
 
@@ -55,7 +55,6 @@ def train_model(device, model, dataloaders, args, logger):
         checkpoint = torch.load(os.path.join(args.resume, "states.bin"))
         optimiser.load_state_dict(checkpoint["optimiser_state_dict"])
         curr_steps, global_step = checkpoint["curr_steps"], checkpoint["global_step"]
-        num_segs = checkpoint["num_segs"]
 
     model.train()
     model.zero_grad()
@@ -63,14 +62,14 @@ def train_model(device, model, dataloaders, args, logger):
     for _ in train_iterator:
         epoch_iterator = tqdm.tqdm(dataloaders["train"], desc="Iteration", disable=args.local_rank not in [-1, 0])
         for step, batch in enumerate(epoch_iterator):
-            input_ids, seg_ids, att_masks, perms = batch
-            input_ids = input_ids.to(device)
-            seg_ids = seg_ids.to(device)
-            att_masks = att_masks.to(device)
-            labels = torch.flatten(perms).to(device)
+            token_ids, token_seg_ids, token_masks, sent_perm = batch
+            n, s = sent_perm.size()
+            token_ids = token_ids.reshape(-1, token_ids.size(-1)).to(device)
+            token_seg_ids = token_seg_ids.reshape(-1, token_seg_ids.size(-1)).to(device)
+            token_masks = token_masks.reshape(-1, token_masks.size(-1)).to(device)
+            labels = torch.flatten(sent_perm).to(device)
 
-            outputs, *_ = model(input_ids=input_ids, attention_mask=att_masks, token_type_ids=seg_ids)
-            outputs = outputs[:, :num_segs ** 2].reshape(-1, num_segs)
+            outputs = model(token_ids, token_seg_ids, token_masks, n, s)
             loss = criterion(outputs, labels)
             if args.n_gpu > 1:
                 loss = loss.mean()  # mean() to average on multi-gpu parallel training
@@ -102,7 +101,7 @@ def train_model(device, model, dataloaders, args, logger):
                 if args.logging_steps > 0 and global_step % args.logging_steps == 0:
                     train_acc = torch.tensor([running_corrects / acc_total]).to(device)
                     train_loss = torch.tensor([(tr_loss - logging_loss) / args.logging_steps]).to(device)
-                    val_loss, val_acc = eval_model(device, model, dataloaders["val"], num_segs)
+                    val_loss, val_acc = eval_model(device, model, dataloaders["val"])
                     if args.distributed:
                         train_loss = mean_reduce(train_loss, args.world_size)
                         train_acc = mean_reduce(train_acc, args.world_size)
@@ -113,17 +112,16 @@ def train_model(device, model, dataloaders, args, logger):
                     if args.local_rank in [-1, 0]:
                         tb_writer.add_scalar("Train_Acc", train_acc, global_step)
                         tb_writer.add_scalar("Train_Loss", train_loss, global_step)
-                        tb_writer.add_scalar("Num_Segs", num_segs, global_step)
+                        # tb_writer.add_scalar("Num_Segs", num_segs, global_step)
                         tb_writer.add_scalar("Val_Acc", val_acc, global_step)
                         tb_writer.add_scalar("Val_Loss", val_loss, global_step)
 
-                if all([args.local_rank in [-1, 0], curr_steps == num_segs * args.learn_prd,
-                        num_segs < args.max_num_segs]):
-                    curr_steps = 0
-                    num_segs += 1
-                    dataloaders["train"].dataset.set_num_segs(num_segs)
-                    dataloaders["train"].dataset.set_poisson_rate(num_segs)
-                    dataloaders["val"].dataset.set_num_segs(num_segs)
+                # if all([args.local_rank in [-1, 0], curr_steps == num_segs * args.learn_prd]):
+                #     curr_steps = 0
+                #     num_segs += 1
+                #     dataloaders["train"].dataset.set_num_segs(num_segs)
+                #     dataloaders["train"].dataset.set_poisson_rate(num_segs)
+                #     dataloaders["val"].dataset.set_num_segs(num_segs)
 
                 if args.local_rank in [-1, 0] and args.save_steps > 0 and global_step % args.save_steps == 0:
                     # Save model checkpoint
@@ -135,7 +133,6 @@ def train_model(device, model, dataloaders, args, logger):
                     torch.save(
                         {"optimiser_state_dict": optimiser.state_dict(),
                          "global_step": global_step,
-                         "num_segs": num_segs,
                          "curr_steps": curr_steps}, os.path.join(output_dir, "states.bin"))
                     logger.info(f"Saving model checkpoint to {output_dir}")
 
@@ -150,22 +147,23 @@ def train_model(device, model, dataloaders, args, logger):
     return global_step, tr_loss / global_step
 
 
-def eval_model(device, model, dataloader, num_segs):
+def eval_model(device, model, dataloader):
     model.eval()
     criterion = torch.nn.CrossEntropyLoss()
 
     running_loss, loss_total = 0, 0
     running_corrects, acc_total = 0, 0
 
-    for input_ids, seg_ids, att_masks, perms in tqdm.tqdm(dataloader, desc="Evaluating"):
-        input_ids = input_ids.to(device)
-        seg_ids = seg_ids.to(device)
-        att_masks = att_masks.to(device)
-        labels = torch.flatten(perms).to(device)
+    for batch in tqdm.tqdm(dataloader, desc="Evaluating"):
+        token_ids, token_seg_ids, token_masks, sent_perm = batch
+        n, s = sent_perm.size()
+        token_ids = token_ids.reshape(-1, token_ids.size(-1)).to(device)
+        token_seg_ids = token_seg_ids.reshape(-1, token_seg_ids.size(-1)).to(device)
+        token_masks = token_masks.reshape(-1, token_masks.size(-1)).to(device)
+        labels = torch.flatten(sent_perm).to(device)
 
         with torch.no_grad():
-            outputs, *_ = model(input_ids=input_ids, attention_mask=att_masks, token_type_ids=seg_ids)
-            outputs = outputs[:, :num_segs ** 2].reshape(-1, num_segs)
+            outputs = model(token_ids, token_seg_ids, token_masks, n, s)
             loss = criterion(outputs, labels)
 
         preds = torch.argmax(outputs, dim=-1)

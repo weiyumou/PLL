@@ -6,12 +6,13 @@ import time
 
 import numpy as np
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, SequentialSampler
 from torch.utils.data import RandomSampler, DistributedSampler
-from transformers import BertConfig, BertForSequenceClassification, BertTokenizer
+from transformers import BertConfig, BertTokenizer
 
 import train
 from data import WikiReader, WikiTrainDataset, WikiEvalDataset
+from models import HiBERT
 
 logger = logging.getLogger(__name__)
 
@@ -37,15 +38,19 @@ def parse_args():
                         type=int,
                         help="Number of segments",
                         default=-1)
-    parser.add_argument("--max_num_segs",
+    parser.add_argument("--sents_per_doc",
                         type=int,
-                        help="Maximum number of segments",
+                        help="Number of sentences per doc",
                         default=64)
     parser.add_argument("--num_epochs",
                         type=int,
                         help="Number of epochs",
                         default=30)
-    parser.add_argument("--init_pr",
+    parser.add_argument("--token_pr",
+                        type=int,
+                        help="The initial poisson rate lambda",
+                        default=2)
+    parser.add_argument("--sent_pr",
                         type=int,
                         help="The initial poisson rate lambda",
                         default=2)
@@ -89,10 +94,6 @@ def parse_args():
 
 def main():
     args = parse_args()
-    resume = args.resume
-    if resume is not None:
-        args = torch.load(os.path.join(resume, "training_args.bin"))
-        args.resume = resume
 
     # Setup CUDA, GPU & distributed training
     args.distributed = False
@@ -134,9 +135,9 @@ def main():
         os.makedirs(args.output_dir, exist_ok=True)
 
     if args.resume is not None:
-        model = BertForSequenceClassification.from_pretrained(args.resume)
+        model = HiBERT.from_pretrained(args.resume)
     else:
-        config_json = {
+        sent_enc_config = {
             "vocab_size": tokeniser.vocab_size,
             "hidden_size": 192,  # 768
             "num_hidden_layers": 3,  # 12
@@ -146,34 +147,44 @@ def main():
             "hidden_dropout_prob": 0.1,
             "attention_probs_dropout_prob": 0.1,
             "max_position_embeddings": args.max_seq_len,
-            "type_vocab_size": args.max_num_segs,
+            "type_vocab_size": args.num_segs,
+            "initializer_range": 0.02,
+            "layer_norm_eps": 1e-12
+        }
+        doc_enc_config = {
+            "vocab_size": 0,
+            "hidden_size": 192,  # 768
+            "num_hidden_layers": 3,  # 12
+            "num_attention_heads": 3,  # 12
+            "intermediate_size": 768,  # 3072
+            "hidden_act": "gelu",
+            "hidden_dropout_prob": 0.1,
+            "attention_probs_dropout_prob": 0.1,
+            "max_position_embeddings": args.sents_per_doc,
+            "type_vocab_size": args.sents_per_doc,
             "initializer_range": 0.02,
             "layer_norm_eps": 1e-12,
-            "num_labels": args.max_num_segs ** 2
+            "num_labels": args.sents_per_doc
         }
-        bert_config = BertConfig(**config_json)
-        model = BertForSequenceClassification(bert_config)
+        sent_enc_config, doc_enc_config = BertConfig(**sent_enc_config), BertConfig(**doc_enc_config)
+        model = HiBERT(sent_enc_config, doc_enc_config)
 
     model.to(device)
     logger.info("Training/evaluation parameters %s", args)
 
-    wiki_reader = WikiReader(args.data_file, 32, args.num_lines)
-    wiki_reader.split(train_perct=0.9)
+    wiki_reader = WikiReader(args.data_file, args.sents_per_doc, args.num_lines)
 
-    train_dataset = WikiTrainDataset(wiki_reader.train_set, tokeniser,
-                                     args.max_seq_len, args.num_segs, args.init_pr)
-    val_dataset = WikiEvalDataset(wiki_reader.val_set, tokeniser,
-                                  args.max_seq_len, args.num_segs)
+    train_dataset = WikiTrainDataset(wiki_reader.train_set, tokeniser, args.max_seq_len, args.num_segs,
+                                     args.sents_per_doc, args.token_pr, args.sent_pr)
+    val_dataset = WikiEvalDataset(wiki_reader.val_set, tokeniser, args.max_seq_len, args.num_segs, args.sents_per_doc)
     args.train_batch_size = args.per_gpu_train_batch_size * max(1, args.n_gpu)
     args.eval_batch_size = args.per_gpu_eval_batch_size * max(1, args.n_gpu)
     train_sampler = RandomSampler(train_dataset) if args.local_rank == -1 else DistributedSampler(train_dataset)
-    # eval_sampler = SequentialSampler(val_dataset) if args.local_rank == -1 else DistributedSampler(val_dataset)
+    eval_sampler = SequentialSampler(val_dataset) if args.local_rank == -1 else DistributedSampler(val_dataset)
     dataloaders = {
         "train": DataLoader(train_dataset, sampler=train_sampler, batch_size=args.train_batch_size),
-        # "val": DataLoader(val_dataset, sampler=eval_sampler, batch_size=args.eval_batch_size)
+        "val": DataLoader(val_dataset, sampler=eval_sampler, batch_size=args.eval_batch_size)
     }
-    data_iter = iter(dataloaders["train"])
-    a = next(data_iter)
 
     global_step, tr_loss = train.train_model(device, model, dataloaders, args, logger)
     logger.info(" global_step = %s, average loss = %s", global_step, tr_loss)
