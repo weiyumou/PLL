@@ -34,9 +34,9 @@ def parse_args():
                         type=int,
                         help="Maximum sequence length",
                         default=64)
-    parser.add_argument("--num_segs",
+    parser.add_argument("--num_paras",
                         type=int,
-                        help="Number of segments",
+                        help="Number of paragraphs",
                         default=-1)
     parser.add_argument("--sents_per_doc",
                         type=int,
@@ -46,10 +46,6 @@ def parse_args():
                         type=int,
                         help="Number of epochs",
                         default=30)
-    parser.add_argument("--token_pr",
-                        type=int,
-                        help="The initial poisson rate lambda",
-                        default=2)
     parser.add_argument("--sent_pr",
                         type=int,
                         help="The initial poisson rate lambda",
@@ -147,12 +143,12 @@ def main():
             "hidden_dropout_prob": 0.2,
             "attention_probs_dropout_prob": 0.1,
             "max_position_embeddings": args.max_seq_len,
-            "type_vocab_size": args.num_segs,
+            "type_vocab_size": 1,
             "initializer_range": 0.02,
             "layer_norm_eps": 1e-12
         }
         doc_enc_config = {
-            "vocab_size": 0,
+            "vocab_size": 1,
             "hidden_size": 192,  # 768
             "num_hidden_layers": 3,  # 12
             "num_attention_heads": 3,  # 12
@@ -161,10 +157,10 @@ def main():
             "hidden_dropout_prob": 0.2,
             "attention_probs_dropout_prob": 0.1,
             "max_position_embeddings": args.sents_per_doc,
-            "type_vocab_size": 1,
+            "type_vocab_size": args.num_paras,
             "initializer_range": 0.02,
             "layer_norm_eps": 1e-12,
-            "num_labels": args.sents_per_doc
+            "num_labels": args.num_paras ** 2
         }
         sent_enc_config, doc_enc_config = BertConfig(**sent_enc_config), BertConfig(**doc_enc_config)
         model = HiBERT(sent_enc_config, doc_enc_config)
@@ -174,9 +170,8 @@ def main():
 
     wiki_reader = WikiReader(args.data_file, args.sents_per_doc, args.num_lines)
 
-    train_dataset = WikiTrainDataset(wiki_reader.train_set, tokeniser, args.max_seq_len, args.num_segs,
-                                     args.sents_per_doc, args.token_pr, args.sent_pr)
-    val_dataset = WikiEvalDataset(wiki_reader.val_set, tokeniser, args.max_seq_len, args.num_segs, args.sents_per_doc)
+    train_dataset = WikiTrainDataset(wiki_reader.train_set, tokeniser, args.max_seq_len, args.num_paras, args.sent_pr)
+    val_dataset = WikiEvalDataset(wiki_reader.val_set, tokeniser, args.max_seq_len, args.num_paras)
     args.train_batch_size = args.per_gpu_train_batch_size * max(1, args.n_gpu)
     args.eval_batch_size = args.per_gpu_eval_batch_size * max(1, args.n_gpu)
     train_sampler = RandomSampler(train_dataset) if args.local_rank == -1 else DistributedSampler(train_dataset)
