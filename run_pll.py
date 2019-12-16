@@ -37,7 +37,7 @@ def parse_args():
     parser.add_argument("--num_paras",
                         type=int,
                         help="Number of paragraphs",
-                        default=-1)
+                        default=9)
     parser.add_argument("--sents_per_doc",
                         type=int,
                         help="Number of sentences per doc",
@@ -140,7 +140,7 @@ def main():
             "num_attention_heads": 3,  # 12
             "intermediate_size": 768,  # 3072
             "hidden_act": "gelu",
-            "hidden_dropout_prob": 0.2,
+            "hidden_dropout_prob": 0.1,
             "attention_probs_dropout_prob": 0.1,
             "max_position_embeddings": args.max_seq_len,
             "type_vocab_size": 1,
@@ -154,7 +154,7 @@ def main():
             "num_attention_heads": 3,  # 12
             "intermediate_size": 768,  # 3072
             "hidden_act": "gelu",
-            "hidden_dropout_prob": 0.2,
+            "hidden_dropout_prob": 0.1,
             "attention_probs_dropout_prob": 0.1,
             "max_position_embeddings": args.sents_per_doc,
             "type_vocab_size": args.num_paras,
@@ -169,16 +169,18 @@ def main():
     logger.info("Training/evaluation parameters %s", args)
 
     wiki_reader = WikiReader(args.data_file, args.sents_per_doc, args.num_lines)
-
     train_dataset = WikiTrainDataset(wiki_reader.train_set, tokeniser, args.max_seq_len, args.num_paras, args.sent_pr)
     val_dataset = WikiEvalDataset(wiki_reader.val_set, tokeniser, args.max_seq_len, args.num_paras)
+
     args.train_batch_size = args.per_gpu_train_batch_size * max(1, args.n_gpu)
     args.eval_batch_size = args.per_gpu_eval_batch_size * max(1, args.n_gpu)
     train_sampler = RandomSampler(train_dataset) if args.local_rank == -1 else DistributedSampler(train_dataset)
     eval_sampler = SequentialSampler(val_dataset) if args.local_rank == -1 else DistributedSampler(val_dataset)
     dataloaders = {
-        "train": DataLoader(train_dataset, sampler=train_sampler, batch_size=args.train_batch_size, pin_memory=True),
-        "val": DataLoader(val_dataset, sampler=eval_sampler, batch_size=args.eval_batch_size, pin_memory=True)
+        "train": DataLoader(train_dataset, sampler=train_sampler, batch_size=args.train_batch_size, pin_memory=True,
+                            num_workers=4 * args.n_gpu),
+        "val": DataLoader(val_dataset, sampler=eval_sampler, batch_size=args.eval_batch_size, pin_memory=True,
+                          num_workers=4 * args.n_gpu)
     }
 
     global_step, tr_loss = train.train_model(device, model, dataloaders, args, logger)

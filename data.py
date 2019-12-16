@@ -97,14 +97,12 @@ class WikiReader:
         self.val_set = docs[train_idx:]
 
 
-class WikiSentDataset(Dataset):
+class WikiDocDataset(Dataset):
 
     def __init__(self, docs, tokeniser, max_seq_len) -> None:
-        super(WikiSentDataset, self).__init__()
+        super(WikiDocDataset, self).__init__()
         self.data = docs
         self.tokeniser = tokeniser
-        # for doc in docs:
-        #     self.data.append([tokeniser.encode(sent, max_length=max_seq_len) for sent in doc])
         self.max_seq_len = max_seq_len
 
     def __getitem__(self, index: int):
@@ -127,12 +125,14 @@ class WikiSentDataset(Dataset):
 class WikiDataset(Dataset):
     def __init__(self, docs, tokeniser, max_seq_len, num_paras):
         super(WikiDataset, self).__init__()
-        self.data = WikiSentDataset(docs, tokeniser, max_seq_len)
+        self.data = WikiDocDataset(docs, tokeniser, max_seq_len)
         self.num_paras = num_paras
         self.ds = calc_dn(num_paras)
 
     def _calc_para_lens(self, num_sents):
         para_lens = [num_sents // self.num_paras] * self.num_paras
+        # for i in range(-(num_sents % self.num_paras), 0):
+        #     para_lens[i] += 1
         rand_inds = random.sample(range(self.num_paras), num_sents % self.num_paras)
         for idx in rand_inds:
             para_lens[idx] += 1
@@ -151,17 +151,18 @@ class WikiTrainDataset(WikiDataset):
         token_ids, token_masks = self.data[index]
         num_sents = token_ids.size(0)
         para_lens = self._calc_para_lens(num_sents)
-        para_ids = torch.repeat_interleave(torch.arange(self.num_paras), torch.tensor(para_lens))
 
         # Permute paragraphs
         k = self.pdist.sample().int().item()
-        sent_perm = k_permute(self.num_paras, k, self.ds)
+        para_perm = k_permute(self.num_paras, k, self.ds)
         token_ids = torch.split(token_ids, para_lens, dim=0)
-        token_ids = torch.cat([token_ids[i] for i in sent_perm], dim=0)
+        token_ids = torch.cat([token_ids[i] for i in para_perm], dim=0)
         token_masks = torch.split(token_masks, para_lens, dim=0)
-        token_masks = torch.cat([token_masks[i] for i in sent_perm], dim=0)
-        sent_perm = torch.tensor(sent_perm, dtype=torch.long)
-        return token_ids, token_masks, para_ids, sent_perm
+        token_masks = torch.cat([token_masks[i] for i in para_perm], dim=0)
+        para_lens = [para_lens[i] for i in para_perm]
+        para_ids = torch.repeat_interleave(torch.arange(self.num_paras), torch.tensor(para_lens))
+        para_perm = torch.tensor(para_perm, dtype=torch.long)
+        return token_ids, token_masks, para_ids, para_perm
 
     def set_poisson_rate(self, pr):
         self.pdist = Poisson(pr)
@@ -170,27 +171,28 @@ class WikiTrainDataset(WikiDataset):
 class WikiEvalDataset(WikiDataset):
     def __init__(self, eval_data, tokeniser, max_seq_len, num_paras):
         super(WikiEvalDataset, self).__init__(eval_data, tokeniser, max_seq_len, num_paras)
-        self.pdist = Poisson(rate=num_paras * 2)
-        self.para_lens, self.sent_perms = dict(), dict()
+        self.pdist = Poisson(rate=num_paras)
+        self.para_lens, self.para_perms = dict(), dict()
         self.generate_data()
 
     def __getitem__(self, index: int):
         token_ids, token_masks = self.data[index]
         para_lens = self.para_lens[index]
-        para_ids = torch.repeat_interleave(torch.arange(self.num_paras), torch.tensor(para_lens))
 
         # Permute paragraphs
-        sent_perm = self.sent_perms[index]
+        para_perm = self.para_perms[index]
         token_ids = torch.split(token_ids, para_lens, dim=0)
-        token_ids = torch.cat([token_ids[i] for i in sent_perm], dim=0)
+        token_ids = torch.cat([token_ids[i] for i in para_perm], dim=0)
         token_masks = torch.split(token_masks, para_lens, dim=0)
-        token_masks = torch.cat([token_masks[i] for i in sent_perm], dim=0)
-        sent_perm = torch.tensor(sent_perm, dtype=torch.long)
-        return token_ids, token_masks, para_ids, sent_perm
+        token_masks = torch.cat([token_masks[i] for i in para_perm], dim=0)
+        para_lens = [para_lens[i] for i in para_perm]
+        para_ids = torch.repeat_interleave(torch.arange(self.num_paras), torch.tensor(para_lens))
+        para_perm = torch.tensor(para_perm, dtype=torch.long)
+        return token_ids, token_masks, para_ids, para_perm
 
     def generate_data(self):
         for idx, (token_ids, token_masks) in enumerate(self.data):
             num_sents = token_ids.size(0)
             self.para_lens[idx] = self._calc_para_lens(num_sents)
             k = self.pdist.sample().int().item()
-            self.sent_perms[idx] = k_permute(self.num_paras, k, self.ds)
+            self.para_perms[idx] = k_permute(self.num_paras, k, self.ds)

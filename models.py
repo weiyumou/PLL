@@ -9,6 +9,8 @@ class HiBERT(BertPreTrainedModel):
         self.sent_enc = BertModel(sent_enc_config)
         self.doc_enc = BertModel(doc_enc_config)
         self.classifier = nn.Linear(doc_enc_config.hidden_size, doc_enc_config.num_labels)
+        nn.init.normal_(self.classifier.weight, std=doc_enc_config.initializer_range)
+        nn.init.constant_(self.classifier.bias, 0.0)
 
     def forward(self, token_ids, token_masks, para_ids, n, s):
         sent_enc_out, *_ = self.sent_enc(input_ids=token_ids, attention_mask=token_masks)

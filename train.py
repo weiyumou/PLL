@@ -15,7 +15,7 @@ def train_model(device, model, dataloaders, args, logger):
     else:
         t_total = len(dataloaders["train"]) // args.gradient_accumulation_steps * args.num_epochs
 
-    optimiser = torch.optim.Adam(model.parameters(), weight_decay=5e-4)
+    optimiser = torch.optim.Adam(model.parameters(), lr=1e-4)
     criterion = torch.nn.CrossEntropyLoss()
 
     # Apex
@@ -114,13 +114,6 @@ def train_model(device, model, dataloaders, args, logger):
                         tb_writer.add_scalar("Train_Loss", train_loss, global_step)
                         tb_writer.add_scalar("Val_Acc", val_acc, global_step)
                         tb_writer.add_scalar("Val_Loss", val_loss, global_step)
-
-                # if all([args.local_rank in [-1, 0], curr_steps == num_segs * args.learn_prd]):
-                #     curr_steps = 0
-                #     num_segs += 1
-                #     dataloaders["train"].dataset.set_num_segs(num_segs)
-                #     dataloaders["train"].dataset.set_poisson_rate(num_segs)
-                #     dataloaders["val"].dataset.set_num_segs(num_segs)
 
                 if args.local_rank in [-1, 0] and args.save_steps > 0 and global_step % args.save_steps == 0:
                     # Save model checkpoint
