@@ -131,8 +131,6 @@ class WikiDataset(Dataset):
 
     def _calc_para_lens(self, num_sents):
         para_lens = [num_sents // self.num_paras] * self.num_paras
-        # for i in range(-(num_sents % self.num_paras), 0):
-        #     para_lens[i] += 1
         rand_inds = random.sample(range(self.num_paras), num_sents % self.num_paras)
         for idx in rand_inds:
             para_lens[idx] += 1
@@ -159,10 +157,10 @@ class WikiTrainDataset(WikiDataset):
         token_ids = torch.cat([token_ids[i] for i in para_perm], dim=0)
         token_masks = torch.split(token_masks, para_lens, dim=0)
         token_masks = torch.cat([token_masks[i] for i in para_perm], dim=0)
-        para_lens = [para_lens[i] for i in para_perm]
-        para_ids = torch.repeat_interleave(torch.arange(self.num_paras), torch.tensor(para_lens))
+        para_lens = torch.tensor([para_lens[i] for i in para_perm], dtype=torch.long)
+        para_ids = torch.repeat_interleave(torch.arange(self.num_paras), para_lens)
         para_perm = torch.tensor(para_perm, dtype=torch.long)
-        return token_ids, token_masks, para_ids, para_perm
+        return token_ids, token_masks, para_ids, para_lens, para_perm
 
     def set_poisson_rate(self, pr):
         self.pdist = Poisson(pr)
@@ -185,13 +183,13 @@ class WikiEvalDataset(WikiDataset):
         token_ids = torch.cat([token_ids[i] for i in para_perm], dim=0)
         token_masks = torch.split(token_masks, para_lens, dim=0)
         token_masks = torch.cat([token_masks[i] for i in para_perm], dim=0)
-        para_lens = [para_lens[i] for i in para_perm]
-        para_ids = torch.repeat_interleave(torch.arange(self.num_paras), torch.tensor(para_lens))
+        para_lens = torch.tensor([para_lens[i] for i in para_perm], dtype=torch.long)
+        para_ids = torch.repeat_interleave(torch.arange(self.num_paras), para_lens)
         para_perm = torch.tensor(para_perm, dtype=torch.long)
-        return token_ids, token_masks, para_ids, para_perm
+        return token_ids, token_masks, para_ids, para_lens, para_perm
 
     def generate_data(self):
-        for idx, (token_ids, token_masks) in enumerate(self.data):
+        for idx, (token_ids, token_masks) in tqdm.tqdm(enumerate(self.data), desc="Generating valset"):
             num_sents = token_ids.size(0)
             self.para_lens[idx] = self._calc_para_lens(num_sents)
             k = self.pdist.sample().int().item()

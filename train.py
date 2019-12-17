@@ -15,7 +15,7 @@ def train_model(device, model, dataloaders, args, logger):
     else:
         t_total = len(dataloaders["train"]) // args.gradient_accumulation_steps * args.num_epochs
 
-    optimiser = torch.optim.Adam(model.parameters(), lr=1e-4)
+    optimiser = torch.optim.Adam(model.parameters(), lr=5e-4)
     criterion = torch.nn.CrossEntropyLoss()
 
     # Apex
@@ -61,15 +61,14 @@ def train_model(device, model, dataloaders, args, logger):
     for _ in train_iterator:
         epoch_iterator = tqdm.tqdm(dataloaders["train"], desc="Iteration", disable=args.local_rank not in [-1, 0])
         for step, batch in enumerate(epoch_iterator):
-            token_ids, token_masks, para_ids, sent_perm = batch
-            n, s = para_ids.size()
+            token_ids, token_masks, para_ids, para_lens, sent_perm = batch
             token_ids = token_ids.reshape(-1, token_ids.size(-1)).to(device)
             token_masks = token_masks.reshape(-1, token_masks.size(-1)).to(device)
             para_ids = para_ids.reshape(-1, para_ids.size(-1)).to(device)
+            para_lens = torch.flatten(para_lens).tolist()
             labels = torch.flatten(sent_perm).to(device)
 
-            outputs = model(token_ids, token_masks, para_ids, n, s)
-            outputs = outputs.reshape(-1, args.num_paras)
+            outputs = model(token_ids, token_masks, para_ids, para_lens)
             loss = criterion(outputs, labels)
             if args.n_gpu > 1:
                 loss = loss.mean()  # mean() to average on multi-gpu parallel training
@@ -101,7 +100,7 @@ def train_model(device, model, dataloaders, args, logger):
                 if args.logging_steps > 0 and global_step % args.logging_steps == 0:
                     train_acc = torch.tensor([running_corrects / acc_total]).to(device)
                     train_loss = torch.tensor([(tr_loss - logging_loss) / args.logging_steps]).to(device)
-                    val_loss, val_acc = eval_model(device, model, dataloaders["val"], args.num_paras)
+                    val_loss, val_acc = eval_model(device, model, dataloaders["val"])
                     if args.distributed:
                         train_loss = mean_reduce(train_loss, args.world_size)
                         train_acc = mean_reduce(train_acc, args.world_size)
@@ -139,7 +138,7 @@ def train_model(device, model, dataloaders, args, logger):
     return global_step, tr_loss / global_step
 
 
-def eval_model(device, model, dataloader, num_paras):
+def eval_model(device, model, dataloader):
     model.eval()
     criterion = torch.nn.CrossEntropyLoss()
 
@@ -147,16 +146,15 @@ def eval_model(device, model, dataloader, num_paras):
     running_corrects, acc_total = 0, 0
 
     for batch in tqdm.tqdm(dataloader, desc="Evaluating"):
-        token_ids, token_masks, para_ids, sent_perm = batch
-        n, s = para_ids.size()
+        token_ids, token_masks, para_ids, para_lens, sent_perm = batch
         token_ids = token_ids.reshape(-1, token_ids.size(-1)).to(device)
         token_masks = token_masks.reshape(-1, token_masks.size(-1)).to(device)
         para_ids = para_ids.reshape(-1, para_ids.size(-1)).to(device)
+        para_lens = torch.flatten(para_lens).tolist()
         labels = torch.flatten(sent_perm).to(device)
 
         with torch.no_grad():
-            outputs = model(token_ids, token_masks, para_ids, n, s)
-            outputs = outputs.reshape(-1, num_paras)
+            outputs = model(token_ids, token_masks, para_ids, para_lens)
             loss = criterion(outputs, labels)
 
         preds = torch.argmax(outputs, dim=-1)

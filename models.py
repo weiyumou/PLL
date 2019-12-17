@@ -1,22 +1,71 @@
+import copy
+
 import torch
 import torch.nn as nn
-from transformers import BertModel, BertPreTrainedModel
+from transformers import BertModel, BertPreTrainedModel, BertConfig
+
+
+class HiBERTConfig(BertConfig):
+
+    def __init__(self, vocab_size_or_config_json_file=30522, hidden_size=768, num_hidden_layers=12,
+                 num_attention_heads=12, intermediate_size=3072, hidden_act="gelu", hidden_dropout_prob=0.1,
+                 attention_probs_dropout_prob=0.1, max_position_embeddings=512, type_vocab_size=2,
+                 initializer_range=0.02, layer_norm_eps=1e-12, **kwargs):
+        super().__init__(vocab_size_or_config_json_file, hidden_size, num_hidden_layers, num_attention_heads,
+                         intermediate_size, hidden_act, hidden_dropout_prob, attention_probs_dropout_prob,
+                         max_position_embeddings, type_vocab_size, initializer_range, layer_norm_eps, **kwargs)
+
+        self.sent_enc_config, self.doc_enc_config = None, None
+        self.create_bert_config()
+
+    def create_bert_config(self):
+        dict_cpy = copy.deepcopy(self.__dict__)
+        dict_cpy["vocab_size"] = (dict_cpy["vocab_size"], 1)
+        del dict_cpy["sent_enc_config"], dict_cpy["doc_enc_config"]
+        for key in dict_cpy:
+            if not (isinstance(dict_cpy[key], list) or isinstance(dict_cpy[key], tuple)):
+                dict_cpy[key] = (dict_cpy[key], dict_cpy[key])
+        values = list(zip(*dict_cpy.values()))
+        sent_enc_config = dict(zip(dict_cpy.keys(), values[0]))
+        sent_enc_config["vocab_size_or_config_json_file"] = sent_enc_config.pop("vocab_size")
+        doc_enc_config = dict(zip(dict_cpy.keys(), values[1]))
+        doc_enc_config["vocab_size_or_config_json_file"] = doc_enc_config.pop("vocab_size")
+        self.sent_enc_config = BertConfig(**sent_enc_config)
+        self.doc_enc_config = BertConfig(**doc_enc_config)
+
+    def to_dict(self):
+        """Serializes this instance to a Python dictionary."""
+        output = copy.deepcopy(self.__dict__)
+        del output["sent_enc_config"], output["doc_enc_config"]
+        return output
+
+    @classmethod
+    def from_dict(cls, json_object):
+        """Constructs a `Config` from a Python dictionary of parameters."""
+        config = super().from_dict(json_object)
+        config.create_bert_config()
+        return config
 
 
 class HiBERT(BertPreTrainedModel):
-    def __init__(self, sent_enc_config, doc_enc_config):
-        super(HiBERT, self).__init__(sent_enc_config)
-        self.sent_enc = BertModel(sent_enc_config)
-        self.doc_enc = BertModel(doc_enc_config)
-        self.classifier = nn.Linear(doc_enc_config.hidden_size, doc_enc_config.num_labels)
-        nn.init.normal_(self.classifier.weight, std=doc_enc_config.initializer_range)
+    config_class = HiBERTConfig
+
+    def __init__(self, model_config):
+        super(HiBERT, self).__init__(model_config.sent_enc_config)
+        self.config = model_config
+        self.sent_enc = BertModel(model_config.sent_enc_config)
+        self.doc_enc = BertModel(model_config.doc_enc_config)
+        self.classifier = nn.Linear(model_config.doc_enc_config.hidden_size, model_config.doc_enc_config.num_labels)
+        nn.init.normal_(self.classifier.weight, std=model_config.doc_enc_config.initializer_range)
         nn.init.constant_(self.classifier.bias, 0.0)
 
-    def forward(self, token_ids, token_masks, para_ids, n, s):
+    def forward(self, token_ids, token_masks, para_ids, para_lens):
+        n, s = para_ids.size()
         sent_enc_out, *_ = self.sent_enc(input_ids=token_ids, attention_mask=token_masks)
         sent_enc_out = torch.split(sent_enc_out[token_masks], torch.sum(token_masks, dim=-1).tolist())
         sent_enc_out = torch.stack([torch.mean(item, dim=0) for item in sent_enc_out], dim=0).reshape(n, s, -1)
         doc_enc_out, *_ = self.doc_enc(inputs_embeds=sent_enc_out, token_type_ids=para_ids)
-        doc_enc_out = torch.mean(doc_enc_out, dim=1)
+        doc_enc_out = torch.split(doc_enc_out.reshape(n * s, -1), para_lens, dim=0)
+        doc_enc_out = torch.stack([torch.mean(item, dim=0) for item in doc_enc_out], dim=0)  # (N * P, H)
         logits = self.classifier(doc_enc_out)
         return logits

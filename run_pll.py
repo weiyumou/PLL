@@ -8,11 +8,11 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, SequentialSampler
 from torch.utils.data import RandomSampler, DistributedSampler
-from transformers import BertConfig, BertTokenizer
+from transformers import BertTokenizer
 
 import train
 from data import WikiReader, WikiTrainDataset, WikiEvalDataset
-from models import HiBERT
+from models import HiBERT, HiBERTConfig
 
 logger = logging.getLogger(__name__)
 
@@ -133,8 +133,8 @@ def main():
     if args.resume is not None:
         model = HiBERT.from_pretrained(args.resume)
     else:
-        sent_enc_config = {
-            "vocab_size": tokeniser.vocab_size,
+        model_config = {
+            "vocab_size_or_config_json_file": tokeniser.vocab_size,
             "hidden_size": 192,  # 768
             "num_hidden_layers": 3,  # 12
             "num_attention_heads": 3,  # 12
@@ -142,28 +142,14 @@ def main():
             "hidden_act": "gelu",
             "hidden_dropout_prob": 0.1,
             "attention_probs_dropout_prob": 0.1,
-            "max_position_embeddings": args.max_seq_len,
-            "type_vocab_size": 1,
-            "initializer_range": 0.02,
-            "layer_norm_eps": 1e-12
-        }
-        doc_enc_config = {
-            "vocab_size": 1,
-            "hidden_size": 192,  # 768
-            "num_hidden_layers": 3,  # 12
-            "num_attention_heads": 3,  # 12
-            "intermediate_size": 768,  # 3072
-            "hidden_act": "gelu",
-            "hidden_dropout_prob": 0.1,
-            "attention_probs_dropout_prob": 0.1,
-            "max_position_embeddings": args.sents_per_doc,
-            "type_vocab_size": args.num_paras,
+            "max_position_embeddings": (args.max_seq_len, args.sents_per_doc),
+            "type_vocab_size": (1, args.num_paras),
             "initializer_range": 0.02,
             "layer_norm_eps": 1e-12,
-            "num_labels": args.num_paras ** 2
+            "num_labels": (0, args.num_paras)
         }
-        sent_enc_config, doc_enc_config = BertConfig(**sent_enc_config), BertConfig(**doc_enc_config)
-        model = HiBERT(sent_enc_config, doc_enc_config)
+        model_config = HiBERTConfig(**model_config)
+        model = HiBERT(model_config)
 
     model.to(device)
     logger.info("Training/evaluation parameters %s", args)
