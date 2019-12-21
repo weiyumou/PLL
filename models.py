@@ -13,8 +13,9 @@ class HiBERTConfig(BertConfig):
                  initializer_range=0.02, layer_norm_eps=1e-12, **kwargs):
         super().__init__(vocab_size_or_config_json_file, hidden_size, num_hidden_layers, num_attention_heads,
                          intermediate_size, hidden_act, hidden_dropout_prob, attention_probs_dropout_prob,
-                         max_position_embeddings, type_vocab_size, initializer_range, layer_norm_eps, **kwargs)
+                         max_position_embeddings, type_vocab_size, initializer_range, layer_norm_eps)
 
+        self.num_labels = kwargs.pop('num_labels', 2)
         self.sent_enc_config, self.doc_enc_config = None, None
         self.create_bert_config()
 
@@ -64,7 +65,7 @@ class HiBERT(BertPreTrainedModel):
         sent_enc_out, *_ = self.sent_enc(input_ids=token_ids, attention_mask=token_masks)
         sent_enc_out = torch.split(sent_enc_out[token_masks], torch.sum(token_masks, dim=-1).tolist())
         sent_enc_out = torch.stack([torch.mean(item, dim=0) for item in sent_enc_out], dim=0).reshape(n, s, -1)
-        doc_enc_out, *_ = self.doc_enc(inputs_embeds=sent_enc_out, token_type_ids=para_ids)
+        doc_enc_out, *_ = self.doc_enc(inputs_embeds=sent_enc_out, position_ids=para_ids)
         doc_enc_out = torch.split(doc_enc_out.reshape(n * s, -1), para_lens, dim=0)
         doc_enc_out = torch.stack([torch.mean(item, dim=0) for item in doc_enc_out], dim=0)  # (N * P, H)
         logits = self.classifier(doc_enc_out)

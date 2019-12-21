@@ -142,8 +142,8 @@ def main():
             "hidden_act": "gelu",
             "hidden_dropout_prob": 0.1,
             "attention_probs_dropout_prob": 0.1,
-            "max_position_embeddings": (args.max_seq_len, args.sents_per_doc),
-            "type_vocab_size": (1, args.num_paras),
+            "max_position_embeddings": (args.max_seq_len, args.num_paras),
+            "type_vocab_size": 1,
             "initializer_range": 0.02,
             "layer_norm_eps": 1e-12,
             "num_labels": (0, args.num_paras)
