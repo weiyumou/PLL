@@ -2,7 +2,6 @@ import random
 
 import torch
 import tqdm
-from torch.distributions import Poisson
 from torch.utils.data import Dataset
 
 
@@ -123,74 +122,56 @@ class WikiDocDataset(Dataset):
 
 
 class WikiDataset(Dataset):
-    def __init__(self, docs, tokeniser, max_seq_len, num_paras):
+    def __init__(self, docs, tokeniser, max_seq_len, num_derangements):
         super(WikiDataset, self).__init__()
         self.data = WikiDocDataset(docs, tokeniser, max_seq_len)
-        self.num_paras = num_paras
-        self.ds = calc_dn(num_paras)
+        self.num_derangements = num_derangements
+        self.ds = calc_dn(num_derangements)
 
-    def _calc_para_lens(self, num_sents):
-        para_lens = [num_sents // self.num_paras] * self.num_paras
-        rand_inds = random.sample(range(self.num_paras), num_sents % self.num_paras)
-        for idx in rand_inds:
-            para_lens[idx] += 1
-        return para_lens
+    def _generate_derangement(self, n):
+        sel_indices = list(sorted(random.sample(range(n), self.num_derangements)))
+        perm = random_derangement(self.num_derangements, self.ds)
+        return sel_indices, perm
 
     def __len__(self):
         return len(self.data)
 
 
 class WikiTrainDataset(WikiDataset):
-    def __init__(self, train_data, tokeniser, max_seq_len, num_paras, pr):
-        super(WikiTrainDataset, self).__init__(train_data, tokeniser, max_seq_len, num_paras)
-        self.pdist = Poisson(rate=pr)
+    def __getitem__(self, index: int):
+        token_ids, token_masks = self.data[index]
+        num_sents = token_ids.size(0)
+        sel_indices, sent_perm = self._generate_derangement(num_sents)
+        token_ids[sel_indices] = token_ids[sel_indices][sent_perm]
+        token_masks[sel_indices] = token_masks[sel_indices][sent_perm]
+
+        sent_perm = torch.tensor(sent_perm, dtype=torch.long)
+        sel_indices = torch.tensor(sel_indices, dtype=torch.long)
+        sent_position_id = torch.arange(num_sents).scatter_(0, sel_indices, value=num_sents)
+        sent_type_id = torch.zeros(num_sents, dtype=torch.long).scatter_(0, sel_indices, value=1)
+        return token_ids, token_masks, sent_position_id, sent_type_id, sent_perm
+
+
+class WikiEvalDataset(WikiDataset):
+    def __init__(self, eval_data, tokeniser, max_seq_len, num_derangements):
+        super(WikiEvalDataset, self).__init__(eval_data, tokeniser, max_seq_len, num_derangements)
+        self.sel_indices, self.sent_perms = dict(), dict()
+        self._generate_data()
 
     def __getitem__(self, index: int):
         token_ids, token_masks = self.data[index]
         num_sents = token_ids.size(0)
-        para_lens = self._calc_para_lens(num_sents)
+        sel_indices, sent_perm = self.sel_indices[index], self.sent_perms[index]
+        token_ids[sel_indices] = token_ids[sel_indices][sent_perm]
+        token_masks[sel_indices] = token_masks[sel_indices][sent_perm]
 
-        # Permute paragraphs
-        k = self.pdist.sample().int().item()
-        para_perm = k_permute(self.num_paras, k, self.ds)
-        token_ids = torch.split(token_ids, para_lens, dim=0)
-        token_ids = torch.cat([token_ids[i] for i in para_perm], dim=0)
-        token_masks = torch.split(token_masks, para_lens, dim=0)
-        token_masks = torch.cat([token_masks[i] for i in para_perm], dim=0)
-        para_lens = torch.tensor([para_lens[i] for i in para_perm], dtype=torch.long)
-        para_ids = torch.repeat_interleave(torch.arange(self.num_paras), para_lens)
-        para_perm = torch.tensor(para_perm, dtype=torch.long)
-        return token_ids, token_masks, para_ids, para_lens, para_perm
+        sent_perm = torch.tensor(sent_perm, dtype=torch.long)
+        sel_indices = torch.tensor(sel_indices, dtype=torch.long)
+        sent_position_id = torch.arange(num_sents).scatter_(0, sel_indices, value=num_sents)
+        sent_type_id = torch.zeros(num_sents, dtype=torch.long).scatter_(0, sel_indices, value=1)
+        return token_ids, token_masks, sent_position_id, sent_type_id, sent_perm
 
-    def set_poisson_rate(self, pr):
-        self.pdist = Poisson(pr)
-
-
-class WikiEvalDataset(WikiDataset):
-    def __init__(self, eval_data, tokeniser, max_seq_len, num_paras):
-        super(WikiEvalDataset, self).__init__(eval_data, tokeniser, max_seq_len, num_paras)
-        self.pdist = Poisson(rate=num_paras)
-        self.para_lens, self.para_perms = dict(), dict()
-        self.generate_data()
-
-    def __getitem__(self, index: int):
-        token_ids, token_masks = self.data[index]
-        para_lens = self.para_lens[index]
-
-        # Permute paragraphs
-        para_perm = self.para_perms[index]
-        token_ids = torch.split(token_ids, para_lens, dim=0)
-        token_ids = torch.cat([token_ids[i] for i in para_perm], dim=0)
-        token_masks = torch.split(token_masks, para_lens, dim=0)
-        token_masks = torch.cat([token_masks[i] for i in para_perm], dim=0)
-        para_lens = torch.tensor([para_lens[i] for i in para_perm], dtype=torch.long)
-        para_ids = torch.repeat_interleave(torch.arange(self.num_paras), para_lens)
-        para_perm = torch.tensor(para_perm, dtype=torch.long)
-        return token_ids, token_masks, para_ids, para_lens, para_perm
-
-    def generate_data(self):
-        for idx, (token_ids, token_masks) in tqdm.tqdm(enumerate(self.data), desc="Generating valset"):
+    def _generate_data(self):
+        for index, (token_ids, token_masks) in tqdm.tqdm(enumerate(self.data), desc="Generating valset"):
             num_sents = token_ids.size(0)
-            self.para_lens[idx] = self._calc_para_lens(num_sents)
-            k = self.pdist.sample().int().item()
-            self.para_perms[idx] = k_permute(self.num_paras, k, self.ds)
+            self.sel_indices[index], self.sent_perms[index] = self._generate_derangement(num_sents)

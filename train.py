@@ -46,14 +46,14 @@ def train_model(device, model, dataloaders, args, logger):
     logger.info("  Gradient Accumulation steps = %d", args.gradient_accumulation_steps)
     logger.info("  Total optimization steps = %d", t_total)
 
-    curr_steps, global_step = 0, 0
+    global_step = 0
     tr_loss, logging_loss = 0.0, 0.0
     running_corrects, acc_total = 0, 0
 
     if args.resume is not None:
         checkpoint = torch.load(os.path.join(args.resume, "states.bin"))
         optimiser.load_state_dict(checkpoint["optimiser_state_dict"])
-        curr_steps, global_step = checkpoint["curr_steps"], checkpoint["global_step"]
+        global_step = checkpoint["global_step"]
 
     model.train()
     model.zero_grad()
@@ -61,14 +61,14 @@ def train_model(device, model, dataloaders, args, logger):
     for _ in train_iterator:
         epoch_iterator = tqdm.tqdm(dataloaders["train"], desc="Iteration", disable=args.local_rank not in [-1, 0])
         for step, batch in enumerate(epoch_iterator):
-            token_ids, token_masks, para_ids, para_lens, sent_perm = batch
+            token_ids, token_masks, sent_position_ids, sent_type_ids, sent_perms = batch
             token_ids = token_ids.reshape(-1, token_ids.size(-1)).to(device)
             token_masks = token_masks.reshape(-1, token_masks.size(-1)).to(device)
-            para_ids = para_ids.reshape(-1, para_ids.size(-1)).to(device)
-            para_lens = torch.flatten(para_lens).tolist()
-            labels = torch.flatten(sent_perm).to(device)
+            sent_position_ids = sent_position_ids.to(device)
+            sent_type_ids = sent_type_ids.to(device)
+            labels = torch.flatten(sent_perms).to(device)
 
-            outputs = model(token_ids, token_masks, para_ids, para_lens)
+            outputs = model(token_ids, token_masks, sent_position_ids, sent_type_ids)
             loss = criterion(outputs, labels)
             if args.n_gpu > 1:
                 loss = loss.mean()  # mean() to average on multi-gpu parallel training
@@ -95,7 +95,6 @@ def train_model(device, model, dataloaders, args, logger):
                 optimiser.step()
                 model.zero_grad()
                 global_step += 1
-                curr_steps += 1
 
                 if args.logging_steps > 0 and global_step % args.logging_steps == 0:
                     train_acc = torch.tensor([running_corrects / acc_total]).to(device)
@@ -123,8 +122,7 @@ def train_model(device, model, dataloaders, args, logger):
                     torch.save(args, os.path.join(output_dir, "training_args.bin"))
                     torch.save(
                         {"optimiser_state_dict": optimiser.state_dict(),
-                         "global_step": global_step,
-                         "curr_steps": curr_steps}, os.path.join(output_dir, "states.bin"))
+                         "global_step": global_step}, os.path.join(output_dir, "states.bin"))
                     logger.info(f"Saving model checkpoint to {output_dir}")
 
             if 0 < args.max_steps < global_step:
@@ -146,15 +144,15 @@ def eval_model(device, model, dataloader):
     running_corrects, acc_total = 0, 0
 
     for batch in tqdm.tqdm(dataloader, desc="Evaluating"):
-        token_ids, token_masks, para_ids, para_lens, sent_perm = batch
+        token_ids, token_masks, sent_position_ids, sent_type_ids, sent_perms = batch
         token_ids = token_ids.reshape(-1, token_ids.size(-1)).to(device)
         token_masks = token_masks.reshape(-1, token_masks.size(-1)).to(device)
-        para_ids = para_ids.reshape(-1, para_ids.size(-1)).to(device)
-        para_lens = torch.flatten(para_lens).tolist()
-        labels = torch.flatten(sent_perm).to(device)
+        sent_position_ids = sent_position_ids.to(device)
+        sent_type_ids = sent_type_ids.to(device)
+        labels = torch.flatten(sent_perms).to(device)
 
         with torch.no_grad():
-            outputs = model(token_ids, token_masks, para_ids, para_lens)
+            outputs = model(token_ids, token_masks, sent_position_ids, sent_type_ids)
             loss = criterion(outputs, labels)
 
         preds = torch.argmax(outputs, dim=-1)

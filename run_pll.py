@@ -34,9 +34,9 @@ def parse_args():
                         type=int,
                         help="Maximum sequence length",
                         default=64)
-    parser.add_argument("--num_paras",
+    parser.add_argument("--num_derangements",
                         type=int,
-                        help="Number of paragraphs",
+                        help="Number of derangements",
                         default=9)
     parser.add_argument("--sents_per_doc",
                         type=int,
@@ -46,14 +46,6 @@ def parse_args():
                         type=int,
                         help="Number of epochs",
                         default=30)
-    parser.add_argument("--sent_pr",
-                        type=int,
-                        help="The initial poisson rate lambda",
-                        default=2)
-    parser.add_argument("--learn_prd",
-                        type=int,
-                        help="Number of steps before providing harder examples",
-                        default=1000)
     parser.add_argument("--eval",
                         help="Whether to evaluate the model",
                         action="store_true")
@@ -142,11 +134,11 @@ def main():
             "hidden_act": "gelu",
             "hidden_dropout_prob": 0.1,
             "attention_probs_dropout_prob": 0.1,
-            "max_position_embeddings": (args.max_seq_len, args.num_paras),
-            "type_vocab_size": 1,
+            "max_position_embeddings": (args.max_seq_len, args.sents_per_doc + 1),
+            "type_vocab_size": (1, 2),
             "initializer_range": 0.02,
             "layer_norm_eps": 1e-12,
-            "num_labels": (0, args.num_paras)
+            "num_labels": (0, args.num_derangements)
         }
         model_config = HiBERTConfig(**model_config)
         model = HiBERT(model_config)
@@ -155,8 +147,8 @@ def main():
     logger.info("Training/evaluation parameters %s", args)
 
     wiki_reader = WikiReader(args.data_file, args.sents_per_doc, args.num_lines)
-    train_dataset = WikiTrainDataset(wiki_reader.train_set, tokeniser, args.max_seq_len, args.num_paras, args.sent_pr)
-    val_dataset = WikiEvalDataset(wiki_reader.val_set, tokeniser, args.max_seq_len, args.num_paras)
+    train_dataset = WikiTrainDataset(wiki_reader.train_set, tokeniser, args.max_seq_len, args.num_derangements)
+    val_dataset = WikiEvalDataset(wiki_reader.val_set, tokeniser, args.max_seq_len, args.num_derangements)
 
     args.train_batch_size = args.per_gpu_train_batch_size * max(1, args.n_gpu)
     args.eval_batch_size = args.per_gpu_eval_batch_size * max(1, args.n_gpu)

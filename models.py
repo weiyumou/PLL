@@ -60,13 +60,14 @@ class HiBERT(BertPreTrainedModel):
         nn.init.normal_(self.classifier.weight, std=model_config.doc_enc_config.initializer_range)
         nn.init.constant_(self.classifier.bias, 0.0)
 
-    def forward(self, token_ids, token_masks, para_ids, para_lens):
-        n, s = para_ids.size()
+    def forward(self, token_ids, token_masks, sent_position_ids, sent_type_ids):
+        n, s = sent_position_ids.size()
         sent_enc_out, *_ = self.sent_enc(input_ids=token_ids, attention_mask=token_masks)
         sent_enc_out = torch.split(sent_enc_out[token_masks], torch.sum(token_masks, dim=-1).tolist())
         sent_enc_out = torch.stack([torch.mean(item, dim=0) for item in sent_enc_out], dim=0).reshape(n, s, -1)
-        doc_enc_out, *_ = self.doc_enc(inputs_embeds=sent_enc_out, position_ids=para_ids)
-        doc_enc_out = torch.split(doc_enc_out.reshape(n * s, -1), para_lens, dim=0)
-        doc_enc_out = torch.stack([torch.mean(item, dim=0) for item in doc_enc_out], dim=0)  # (N * P, H)
+        doc_enc_out, *_ = self.doc_enc(inputs_embeds=sent_enc_out,
+                                       position_ids=sent_position_ids,
+                                       token_type_ids=sent_type_ids)
+        doc_enc_out = doc_enc_out[sent_type_ids.bool()]
         logits = self.classifier(doc_enc_out)
         return logits
