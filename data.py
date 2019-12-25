@@ -1,6 +1,7 @@
 import os
 import random
 import xml.etree.ElementTree as ET
+from random import Random
 
 import pandas as pd
 import torch
@@ -20,26 +21,28 @@ def calc_dn(n):
     return ds
 
 
-def random_derangement(n, ds):
+def random_derangement(n, ds, prg=None):
     """
     Implementation of the algorithm for generating random derangement of length n,
     as described in the paper "Generating Random Derangements"
     retrieved at https://epubs.siam.org/doi/pdf/10.1137/1.9781611972986.7
+    :param prg: A Pseudo-random Generator
     :param n: The length of the derangement
     :param ds: A list of lengths of derangement for all 0 <= i <= n
     :return: A random derangement
     """
+    prg = random if prg is None else prg
     perm = list(range(n))
     mask = [False] * n
 
     i, u = n - 1, n - 1
     while u >= 1:
         if not mask[i]:
-            j = random.randrange(i)
+            j = prg.randrange(i)
             while mask[j]:
-                j = random.randrange(i)
+                j = prg.randrange(i)
             perm[i], perm[j] = perm[j], perm[i]
-            p = random.random()
+            p = prg.random()
             if p < u * ds[u - 1] / ds[u + 1]:
                 mask[j] = True
                 u -= 1
@@ -48,18 +51,20 @@ def random_derangement(n, ds):
     return perm
 
 
-def k_permute(n, k, ds):
+def k_permute(n, k, ds, prg=None):
     """
     Produces a random permutation of n elements that contains a derangment of k elements
+    :param prg: A Pseudo-random Generator
     :param n: Total number of elements
     :param k: The length of the derangement
     :param ds: A list of lengths of derangement for all 0 <= i <= n
     :return: A random permutation with a derangement of the desired length
     """
+    prg = random if prg is None else prg
     k = min(k, n)
     indices = list(range(n))
-    sel_indices = sorted(random.sample(indices, k))
-    perm = random_derangement(k, ds)
+    sel_indices = sorted(prg.sample(indices, k))
+    perm = random_derangement(k, ds, prg)
     new_indices = indices.copy()
     for i, p in enumerate(perm):
         new_indices[sel_indices[i]] = indices[sel_indices[p]]
@@ -178,27 +183,26 @@ class DocDataset(Dataset):
         return len(self.data)
 
 
-class PLLDataset(Dataset):
+class PLLTrainDataset(Dataset):
     def __init__(self, docs, tokeniser, max_seq_len, num_derangements):
-        super(PLLDataset, self).__init__()
+        super(PLLTrainDataset, self).__init__()
         self.data = DocDataset(docs, tokeniser, max_seq_len)
         self.num_derangements = num_derangements
         self.ds = calc_dn(num_derangements)
 
-    def _generate_derangement(self, n):
-        sel_indices = list(sorted(random.sample(range(n), self.num_derangements)))
-        perm = random_derangement(self.num_derangements, self.ds)
+    def _generate_derangement(self, n, index, prg=None):
+        prg = random if prg is None else prg
+        sel_indices = list(sorted(prg.sample(range(n), self.num_derangements)))
+        perm = random_derangement(self.num_derangements, self.ds, prg)
         return sel_indices, perm
 
     def __len__(self):
         return len(self.data)
 
-
-class PLLTrainDataset(PLLDataset):
     def __getitem__(self, index: int):
         token_ids, token_masks = self.data[index]
         num_sents = token_ids.size(0)
-        sel_indices, sent_perm = self._generate_derangement(num_sents)
+        sel_indices, sent_perm = self._generate_derangement(num_sents, index)
         token_ids[sel_indices] = token_ids[sel_indices][sent_perm]
         token_masks[sel_indices] = token_masks[sel_indices][sent_perm]
 
@@ -209,26 +213,7 @@ class PLLTrainDataset(PLLDataset):
         return token_ids, token_masks, sent_position_id, sent_type_id, sent_perm
 
 
-class PLLEvalDataset(PLLDataset):
-    def __init__(self, eval_data, tokeniser, max_seq_len, num_derangements):
-        super(PLLEvalDataset, self).__init__(eval_data, tokeniser, max_seq_len, num_derangements)
-        self.sel_indices, self.sent_perms = dict(), dict()
-        self._generate_data()
-
-    def __getitem__(self, index: int):
-        token_ids, token_masks = self.data[index]
-        num_sents = token_ids.size(0)
-        sel_indices, sent_perm = self.sel_indices[index], self.sent_perms[index]
-        token_ids[sel_indices] = token_ids[sel_indices][sent_perm]
-        token_masks[sel_indices] = token_masks[sel_indices][sent_perm]
-
-        sent_perm = torch.tensor(sent_perm, dtype=torch.long)
-        sel_indices = torch.tensor(sel_indices, dtype=torch.long)
-        sent_position_id = torch.arange(num_sents).scatter_(0, sel_indices, value=num_sents)
-        sent_type_id = torch.zeros(num_sents, dtype=torch.long).scatter_(0, sel_indices, value=1)
-        return token_ids, token_masks, sent_position_id, sent_type_id, sent_perm
-
-    def _generate_data(self):
-        for index, (token_ids, token_masks) in tqdm.tqdm(enumerate(self.data), desc="Generating valset"):
-            num_sents = token_ids.size(0)
-            self.sel_indices[index], self.sent_perms[index] = self._generate_derangement(num_sents)
+class PLLEvalDataset(PLLTrainDataset):
+    def _generate_derangement(self, n, index, prg=None):
+        prg = Random(index)
+        return super()._generate_derangement(n, index, prg)
