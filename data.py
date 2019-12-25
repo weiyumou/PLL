@@ -73,7 +73,7 @@ class WikiReader:
         with open(data_file, "r") as file_hdl:
             for line in tqdm.tqdm(file_hdl, desc="Reading File"):
                 line = line.rstrip("\n")
-                if not line:
+                if not line or self._is_doc_end(line):
                     continue
                 if curr_num_lines == lines_per_doc:
                     if seq:
@@ -96,7 +96,11 @@ class WikiReader:
 
     @staticmethod
     def _is_doc_start(line):
-        return line.startswith("[")
+        return line.startswith("<doc id")
+
+    @staticmethod
+    def _is_doc_end(line):
+        return line.startswith("</doc>")
 
 
 class GigawordReader:
