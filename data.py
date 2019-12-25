@@ -1,5 +1,8 @@
+import os
 import random
+import xml.etree.ElementTree as ET
 
+import pandas as pd
 import torch
 import tqdm
 from torch.utils.data import Dataset
@@ -63,10 +66,6 @@ def k_permute(n, k, ds):
     return new_indices
 
 
-def is_doc_start(line):
-    return line.startswith("[")
-
-
 class WikiReader:
     def __init__(self, data_file, lines_per_doc, num_lines=-1, train_perct=0.9):
         docs, seq = [], []
@@ -81,7 +80,7 @@ class WikiReader:
                         docs.append(seq)
                         seq = []
                         curr_num_lines = 0
-                if is_doc_start(line):
+                if self._is_doc_start(line):
                     seq = []
                     curr_num_lines = 0
                     continue
@@ -95,11 +94,65 @@ class WikiReader:
         self.train_set = docs[:train_idx]
         self.val_set = docs[train_idx:]
 
+    @staticmethod
+    def _is_doc_start(line):
+        return line.startswith("[")
 
-class WikiDocDataset(Dataset):
+
+class GigawordReader:
+    def __init__(self, gigaword_root, dtd_path, invalid_file_path, lines_per_doc, lines_to_read=-1, train_perct=0.9):
+        invalid_files = set([item.rstrip("\n") for item in open(invalid_file_path).readlines()])
+        invalid_docs = self._get_invalid_docs(gigaword_root)
+        dtd = open(dtd_path).read()
+
+        self.train_set, self.val_set = [], []
+        for news_source in sorted(os.listdir(os.path.join(gigaword_root, "data"))):
+            data_path = os.path.join(gigaword_root, "data", news_source)
+            line_limit = lines_to_read
+            docs = []
+            for data_file in tqdm.tqdm(sorted(os.listdir(data_path)), desc=f"Reading {news_source}"):
+                if data_file in invalid_files:
+                    continue
+                content = open(os.path.join(data_path, data_file)).read()
+                content = "\n".join([dtd, "<GWENG>", content, "</GWENG>"])
+                root = ET.fromstring(content)
+                for doc in root:
+                    if doc.attrib["type"] != "story" or doc.attrib["id"] in invalid_docs:
+                        continue
+                    seq, curr_num_lines = [], 0
+                    for para in doc.iter("P"):
+                        if curr_num_lines == lines_per_doc and seq:
+                            docs.append(seq)
+                            seq, curr_num_lines = [], 0
+                        seq.append(para.text.replace("\n", " "))
+                        curr_num_lines += 1
+                        line_limit -= 1
+                        if line_limit == 0:
+                            break
+                    if line_limit == 0:
+                        break
+                if line_limit == 0:
+                    break
+            train_idx = int(train_perct * len(docs))
+            self.train_set.extend(docs[:train_idx])
+            self.val_set.extend(docs[train_idx:])
+
+    @staticmethod
+    def _get_invalid_docs(data_root):
+        other_file = os.path.join(data_root, "docs", "other.file-doc.map")
+        spanish_file = os.path.join(data_root, "docs", "spanish.file-doc.map")
+        other_df = pd.read_csv(other_file, sep=" ", names=["File_Name", "Doc"])
+        spanish_df = pd.read_csv(spanish_file, sep=" ", names=["File_Name", "Doc"])
+        noisy_file = os.path.join(data_root, "docs", "nyt_noisy_paragraphs.tab")
+        noisy_df = pd.read_csv(noisy_file, sep="\t")
+        invalid_docs = set(other_df["Doc"].tolist()) | set(spanish_df["Doc"].tolist()) | set(noisy_df["docid"].tolist())
+        return invalid_docs
+
+
+class DocDataset(Dataset):
 
     def __init__(self, docs, tokeniser, max_seq_len) -> None:
-        super(WikiDocDataset, self).__init__()
+        super(DocDataset, self).__init__()
         self.data = docs
         self.tokeniser = tokeniser
         self.max_seq_len = max_seq_len
@@ -121,10 +174,10 @@ class WikiDocDataset(Dataset):
         return len(self.data)
 
 
-class WikiDataset(Dataset):
+class PLLDataset(Dataset):
     def __init__(self, docs, tokeniser, max_seq_len, num_derangements):
-        super(WikiDataset, self).__init__()
-        self.data = WikiDocDataset(docs, tokeniser, max_seq_len)
+        super(PLLDataset, self).__init__()
+        self.data = DocDataset(docs, tokeniser, max_seq_len)
         self.num_derangements = num_derangements
         self.ds = calc_dn(num_derangements)
 
@@ -137,7 +190,7 @@ class WikiDataset(Dataset):
         return len(self.data)
 
 
-class WikiTrainDataset(WikiDataset):
+class PLLTrainDataset(PLLDataset):
     def __getitem__(self, index: int):
         token_ids, token_masks = self.data[index]
         num_sents = token_ids.size(0)
@@ -152,9 +205,9 @@ class WikiTrainDataset(WikiDataset):
         return token_ids, token_masks, sent_position_id, sent_type_id, sent_perm
 
 
-class WikiEvalDataset(WikiDataset):
+class PLLEvalDataset(PLLDataset):
     def __init__(self, eval_data, tokeniser, max_seq_len, num_derangements):
-        super(WikiEvalDataset, self).__init__(eval_data, tokeniser, max_seq_len, num_derangements)
+        super(PLLEvalDataset, self).__init__(eval_data, tokeniser, max_seq_len, num_derangements)
         self.sel_indices, self.sent_perms = dict(), dict()
         self._generate_data()
 

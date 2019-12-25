@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<!DOCTYPE GWENG[
+        <!--top level -->
+        <!ELEMENT  GWENG        (DOC+)>
+        <!ELEMENT  DOC          (HEADLINE*,
+                DATELINE*,
+                TEXT*)>
+        <!--fields of "DOC"  -->
+        <!ELEMENT  HEADLINE      (#PCDATA)        >
+        <!ELEMENT  DATELINE      (#PCDATA)        >
+        <!ELEMENT  TEXT         (P+)  >
+        <!--fields of "TEXT" -->
+        <!ELEMENT  P             (#PCDATA) >
+        <!ELEMENT  corruption   EMPTY >
+
+        <!ENTITY   AMP     "&amp;" >
+        <!ENTITY   GT      "&gt;" >
+        <!ENTITY   LT      "&lt;" >
+
+        <!ATTLIST DOC   id    CDATA #REQUIRED
+                type  CDATA #REQUIRED >
+        ]>

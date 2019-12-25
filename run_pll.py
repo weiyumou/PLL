@@ -11,7 +11,7 @@ from torch.utils.data import RandomSampler, DistributedSampler
 from transformers import BertTokenizer
 
 import train
-from data import WikiReader, WikiTrainDataset, WikiEvalDataset
+from data import WikiReader, GigawordReader, PLLTrainDataset, PLLEvalDataset
 from models import HiBERT, HiBERTConfig
 
 logger = logging.getLogger(__name__)
@@ -22,10 +22,18 @@ def parse_args():
     parser.add_argument("--deterministic",
                         help="Whether to set random seeds",
                         action="store_true")
-    parser.add_argument("--data_file",
+    parser.add_argument("--data_root",
                         type=str,
-                        help="Path to the data file",
+                        help="Path to the data root",
                         required=True)
+    parser.add_argument("--dtd_path",
+                        type=str,
+                        help="Path to the dtd file for Gigaword",
+                        default=None)
+    parser.add_argument("--invalid_file_path",
+                        type=str,
+                        help="Path to the list of invalid files for Gigaword",
+                        default=None)
     parser.add_argument("--num_lines",
                         type=int,
                         help="Number of lines to read",
@@ -146,9 +154,13 @@ def main():
     model.to(device)
     logger.info("Training/evaluation parameters %s", args)
 
-    wiki_reader = WikiReader(args.data_file, args.sents_per_doc, args.num_lines)
-    train_dataset = WikiTrainDataset(wiki_reader.train_set, tokeniser, args.max_seq_len, args.num_derangements)
-    val_dataset = WikiEvalDataset(wiki_reader.val_set, tokeniser, args.max_seq_len, args.num_derangements)
+    if args.dtd_path is None or args.invalid_file_path is None:
+        data_reader = WikiReader(args.data_root, args.sents_per_doc, args.num_lines)
+    else:
+        data_reader = GigawordReader(args.data_root, args.dtd_path, args.invalid_file_path, args.sents_per_doc,
+                                     args.num_lines)
+    train_dataset = PLLTrainDataset(data_reader.train_set, tokeniser, args.max_seq_len, args.num_derangements)
+    val_dataset = PLLEvalDataset(data_reader.val_set, tokeniser, args.max_seq_len, args.num_derangements)
 
     args.train_batch_size = args.per_gpu_train_batch_size * max(1, args.n_gpu)
     args.eval_batch_size = args.per_gpu_eval_batch_size * max(1, args.n_gpu)
