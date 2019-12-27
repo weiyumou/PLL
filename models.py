@@ -71,3 +71,38 @@ class HiBERT(BertPreTrainedModel):
         doc_enc_out = doc_enc_out[sent_type_ids.bool()]
         logits = self.classifier(doc_enc_out)
         return logits
+
+
+class HiBERTWithAttn(HiBERT):
+
+    def __init__(self, model_config):
+        super(HiBERTWithAttn, self).__init__(model_config)
+        self.attn = Attention(self.doc_enc.config.hidden_size,
+                              self.doc_enc.config.hidden_size // 2,
+                              self.doc_enc.config.initializer_range)
+
+    def forward(self, token_ids, token_masks, sent_position_ids, sent_type_ids):
+        n, s = sent_position_ids.size()
+        sent_enc_out, *_ = self.sent_enc(input_ids=token_ids, attention_mask=token_masks)
+        attn_weights = self.attn(sent_enc_out)
+        sent_enc_out = torch.bmm(attn_weights, sent_enc_out).reshape(n, s, -1)
+        doc_enc_out, *_ = self.doc_enc(inputs_embeds=sent_enc_out,
+                                       position_ids=sent_position_ids,
+                                       token_type_ids=sent_type_ids)
+        doc_enc_out = doc_enc_out[sent_type_ids.bool()]
+        logits = self.classifier(doc_enc_out)
+        return logits
+
+
+class Attention(nn.Module):
+    def __init__(self, hidden_size, attn_hidden_size, initializer_range) -> None:
+        super(Attention, self).__init__()
+        self.fc1 = nn.Linear(in_features=hidden_size, out_features=attn_hidden_size, bias=False)
+        self.fc2 = nn.Linear(in_features=attn_hidden_size, out_features=1, bias=False)
+        nn.init.normal_(self.fc1.weight, std=initializer_range)
+        nn.init.normal_(self.fc2.weight, std=initializer_range)
+
+    def forward(self, x):
+        fc1_out = self.fc1(x)
+        fc2_out = self.fc2(torch.tanh(fc1_out)).permute([0, 2, 1])
+        return torch.softmax(fc2_out, dim=-1)

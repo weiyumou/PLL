@@ -8,7 +8,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=4
 #SBATCH --cpus-per-task=2
-#SBATCH --mem-per-cpu=4gb
+#SBATCH --mem-per-cpu=8gb
 #SBATCH --mail-type=BEGIN,END,FAIL
 
 # Load modules
@@ -17,8 +17,6 @@ module list
 
 # Run code
 conda activate pytorch-nlp
-# pip install --user tb-nightly future
-# pip install --user transformers
 cd /gpfs/accounts/medhonda501f19w20_class_root/medhonda501f19w20_class/yumouwei/PLL
-python run_pll.py --deterministic --data_root ../gigaword_eng_5 --dtd_path meta-data/gigaword.dtd --invalid_file_path meta-data/gigaword_invalid_files.txt --sents_per_doc 16 --max_seq_len 64 --num_derangements 9 --max_steps 1000000 --per_gpu_train_batch_size 64 --per_gpu_eval_batch_size 64 --logging_steps 2000 --save_steps 2000
+python run_pll.py --deterministic --data_root ../gigaword_eng_5 --dtd_path meta-data/gigaword.dtd --invalid_file_path meta-data/gigaword_invalid_files.txt --sents_per_doc 16 --max_seq_len 64 --num_derangements 9 --max_steps 1000000 --per_gpu_train_batch_size 32 --per_gpu_eval_batch_size 32 --logging_steps 2000 --save_steps 2000 --fp16
 

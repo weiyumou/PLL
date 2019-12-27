@@ -12,7 +12,7 @@ from transformers import BertTokenizer
 
 import train
 from data import WikiReader, GigawordReader, PLLTrainDataset, PLLEvalDataset
-from models import HiBERT, HiBERTConfig
+from models import HiBERT, HiBERTConfig, HiBERTWithAttn
 
 logger = logging.getLogger(__name__)
 
@@ -54,8 +54,8 @@ def parse_args():
                         type=int,
                         help="Number of epochs",
                         default=30)
-    parser.add_argument("--eval",
-                        help="Whether to evaluate the model",
+    parser.add_argument("--attn",
+                        help="Whether to use HiBERTWithAttn",
                         action="store_true")
     parser.add_argument("--resume",
                         type=str,
@@ -93,8 +93,8 @@ def main():
 
     # Setup CUDA, GPU & distributed training
     args.distributed = False
-    if 'WORLD_SIZE' in os.environ:
-        args.distributed = int(os.environ['WORLD_SIZE']) > 1
+    if "WORLD_SIZE" in os.environ:
+        args.distributed = int(os.environ["WORLD_SIZE"]) > 1
     if args.local_rank == -1:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         args.n_gpu = torch.cuda.device_count()
@@ -118,11 +118,11 @@ def main():
                         datefmt="%m/%d/%Y %H:%M:%S",
                         level=logging.INFO if args.local_rank in [-1, 0] else logging.WARN)
     logger.warning("Process rank: %s, device: %s, n_gpu: %s, distributed training: %s, 16-bits training: %s",
-                   args.local_rank, device, args.n_gpu, bool(args.local_rank != -1), args.fp16)
+                   args.local_rank, device, args.n_gpu, args.distributed, args.fp16)
 
     if args.local_rank not in [-1, 0]:
         torch.distributed.barrier()  # Make sure only the first process in distributed training will download model & vocab
-    tokeniser = BertTokenizer.from_pretrained("bert-base-cased")
+    tokeniser = BertTokenizer.from_pretrained("bert-base-uncased")
     if args.local_rank == 0:
         torch.distributed.barrier()  # Make sure only the first process in distributed training will download model & vocab
 
@@ -131,7 +131,10 @@ def main():
         os.makedirs(args.output_dir, exist_ok=True)
 
     if args.resume is not None:
-        model = HiBERT.from_pretrained(args.resume)
+        if args.attn:
+            model = HiBERTWithAttn.from_pretrained(args.resume)
+        else:
+            model = HiBERT.from_pretrained(args.resume)
     else:
         model_config = {
             "vocab_size_or_config_json_file": tokeniser.vocab_size,
@@ -149,7 +152,10 @@ def main():
             "num_labels": (0, args.num_derangements)
         }
         model_config = HiBERTConfig(**model_config)
-        model = HiBERT(model_config)
+        if args.attn:
+            model = HiBERTWithAttn(model_config)
+        else:
+            model = HiBERT(model_config)
 
     model.to(device)
     logger.info("Training/evaluation parameters %s", args)
@@ -174,9 +180,9 @@ def main():
     }
 
     global_step, tr_loss = train.train_model(device, model, dataloaders, args, logger)
-    logger.info(" global_step = %s, average loss = %s", global_step, tr_loss)
+    logger.info(f"Global Steps = {global_step}, Average Loss = {tr_loss}")
 
-    logger.info("Saving model checkpoint to %s", args.output_dir)
+    logger.info(f"Saving model checkpoint to {args.output_dir}")
     model_to_save = model.module if hasattr(model, "module") else model  # Take care of distributed/parallel training
     model_to_save.save_pretrained(args.output_dir)
     torch.save(args, os.path.join(args.output_dir, "training_args.bin"))

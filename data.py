@@ -101,7 +101,7 @@ class WikiReader:
 
     @staticmethod
     def _is_doc_start(line):
-        return line.startswith("<doc id")
+        return line.startswith(("<doc id", "[["))
 
     @staticmethod
     def _is_doc_end(line):
@@ -192,7 +192,7 @@ class PLLTrainDataset(Dataset):
 
     def _generate_derangement(self, n, index, prg=None):
         prg = random if prg is None else prg
-        sel_indices = list(sorted(prg.sample(range(n), self.num_derangements)))
+        sel_indices = sorted(prg.sample(range(n), self.num_derangements))
         perm = random_derangement(self.num_derangements, self.ds, prg)
         return sel_indices, perm
 

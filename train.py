@@ -50,6 +50,7 @@ def train_model(device, model, dataloaders, args, logger):
     tr_loss, logging_loss = 0.0, 0.0
     running_corrects, acc_total = 0, 0
 
+    # Resume from a checkpoint
     if args.resume is not None:
         checkpoint = torch.load(os.path.join(args.resume, "states.bin"))
         optimiser.load_state_dict(checkpoint["optimiser_state_dict"])
@@ -66,7 +67,7 @@ def train_model(device, model, dataloaders, args, logger):
             token_masks = token_masks.reshape(-1, token_masks.size(-1)).to(device)
             sent_position_ids = sent_position_ids.to(device)
             sent_type_ids = sent_type_ids.to(device)
-            labels = torch.flatten(sent_perms).to(device)
+            labels = torch.flatten(sent_perms).to(device, non_blocking=True)
 
             outputs = model(token_ids, token_masks, sent_position_ids, sent_type_ids)
             loss = criterion(outputs, labels)
@@ -97,14 +98,14 @@ def train_model(device, model, dataloaders, args, logger):
                 global_step += 1
 
                 if args.logging_steps > 0 and global_step % args.logging_steps == 0:
-                    train_acc = torch.tensor([running_corrects / acc_total]).to(device)
-                    train_loss = torch.tensor([(tr_loss - logging_loss) / args.logging_steps]).to(device)
+                    train_loss = (tr_loss - logging_loss) / args.logging_steps
+                    train_acc = running_corrects / acc_total
                     val_loss, val_acc = eval_model(device, model, dataloaders["val"])
                     if args.distributed:
-                        train_loss = mean_reduce(train_loss, args.world_size)
-                        train_acc = mean_reduce(train_acc, args.world_size)
-                        val_loss = mean_reduce(val_loss, args.world_size)
-                        val_acc = mean_reduce(val_acc, args.world_size)
+                        train_loss = mean_reduce(torch.tensor([train_loss], device=device), args.world_size)
+                        train_acc = mean_reduce(torch.tensor([train_acc], device=device), args.world_size)
+                        val_loss = mean_reduce(torch.tensor([val_loss], device=device), args.world_size)
+                        val_acc = mean_reduce(torch.tensor([val_acc], device=device), args.world_size)
                     logging_loss = tr_loss
                     running_corrects, acc_total = 0, 0
                     if args.local_rank in [-1, 0]:
@@ -149,7 +150,7 @@ def eval_model(device, model, dataloader):
         token_masks = token_masks.reshape(-1, token_masks.size(-1)).to(device)
         sent_position_ids = sent_position_ids.to(device)
         sent_type_ids = sent_type_ids.to(device)
-        labels = torch.flatten(sent_perms).to(device)
+        labels = torch.flatten(sent_perms).to(device, non_blocking=True)
 
         with torch.no_grad():
             outputs = model(token_ids, token_masks, sent_position_ids, sent_type_ids)
@@ -163,7 +164,7 @@ def eval_model(device, model, dataloader):
 
     eval_loss, eval_acc = running_loss / loss_total, running_corrects / acc_total
     model.train()
-    return torch.tensor([eval_loss], device=device), torch.tensor([eval_acc], device=device)
+    return eval_loss, eval_acc
 
 
 def mean_reduce(tensor, world_size):
