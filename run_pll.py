@@ -1,4 +1,5 @@
 import argparse
+import json
 import logging
 import os
 import random
@@ -34,6 +35,10 @@ def parse_args():
                         type=str,
                         help="Path to the list of invalid files for Gigaword",
                         default=None)
+    parser.add_argument("--config",
+                        type=str,
+                        help="Path to a model config file",
+                        default="config/1_4_BERT.json")
     parser.add_argument("--num_lines",
                         type=int,
                         help="Number of lines to read",
@@ -45,7 +50,7 @@ def parse_args():
     parser.add_argument("--num_derangements",
                         type=int,
                         help="Number of derangements",
-                        default=9)
+                        default=12)
     parser.add_argument("--sents_per_doc",
                         type=int,
                         help="Number of sentences per doc",
@@ -54,6 +59,10 @@ def parse_args():
                         type=int,
                         help="Number of epochs",
                         default=30)
+    parser.add_argument("--lr", default=5e-4, type=float, help="The initial learning rate")
+    parser.add_argument("--use_scheduler",
+                        help="Whether to use LR scheduler",
+                        action="store_true")
     parser.add_argument("--attn",
                         help="Whether to use HiBERTWithAttn",
                         action="store_true")
@@ -77,6 +86,7 @@ def parse_args():
                         help="Log every X updates steps.")
     parser.add_argument("--save_steps", type=int, default=50,
                         help="Save checkpoint every X updates steps.")
+    parser.add_argument("--warmup_steps", default=0, type=int, help="Linear warmup over warmup_steps.")
     parser.add_argument("--fp16", action="store_true",
                         help="Whether to use 16-bit (mixed) precision (through NVIDIA apex) instead of 32-bit")
     parser.add_argument("--fp16_opt_level", type=str, default="O1",
@@ -136,21 +146,14 @@ def main():
         else:
             model = HiBERT.from_pretrained(args.resume)
     else:
-        model_config = {
+        with open(args.config, "r") as f:
+            model_config = json.load(f)
+        model_config.update({
             "vocab_size_or_config_json_file": tokeniser.vocab_size,
-            "hidden_size": 192,  # 768
-            "num_hidden_layers": 3,  # 12
-            "num_attention_heads": 3,  # 12
-            "intermediate_size": 768,  # 3072
-            "hidden_act": "gelu",
-            "hidden_dropout_prob": 0.1,
-            "attention_probs_dropout_prob": 0.1,
             "max_position_embeddings": (args.max_seq_len, args.sents_per_doc + 1),
             "type_vocab_size": (1, 2),
-            "initializer_range": 0.02,
-            "layer_norm_eps": 1e-12,
             "num_labels": (0, args.num_derangements)
-        }
+        })
         model_config = HiBERTConfig(**model_config)
         if args.attn:
             model = HiBERTWithAttn(model_config)

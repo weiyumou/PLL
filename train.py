@@ -3,6 +3,7 @@ import os
 import torch
 import tqdm
 from torch.utils.tensorboard import SummaryWriter
+from transformers import get_linear_schedule_with_warmup
 
 
 def train_model(device, model, dataloaders, args, logger):
@@ -15,8 +16,10 @@ def train_model(device, model, dataloaders, args, logger):
     else:
         t_total = len(dataloaders["train"]) // args.gradient_accumulation_steps * args.num_epochs
 
-    optimiser = torch.optim.Adam(model.parameters(), lr=5e-4)
+    optimiser = torch.optim.Adam(model.parameters(), lr=args.lr)
     criterion = torch.nn.CrossEntropyLoss()
+    scheduler = get_linear_schedule_with_warmup(optimiser, num_warmup_steps=args.warmup_steps,
+                                                num_training_steps=t_total) if args.use_scheduler else None
 
     # Apex
     if args.fp16:
@@ -49,12 +52,22 @@ def train_model(device, model, dataloaders, args, logger):
     global_step = 0
     tr_loss, logging_loss = 0.0, 0.0
     running_corrects, acc_total = 0, 0
+    epochs_trained, steps_trained_in_current_epoch = 0, 0
 
     # Resume from a checkpoint
     if args.resume is not None:
         checkpoint = torch.load(os.path.join(args.resume, "states.bin"))
         optimiser.load_state_dict(checkpoint["optimiser_state_dict"])
+        if scheduler is not None:
+            scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
         global_step = checkpoint["global_step"]
+        epochs_trained = global_step // (len(dataloaders["train"]) // args.gradient_accumulation_steps)
+        steps_trained_in_current_epoch = global_step % (len(dataloaders["train"]) // args.gradient_accumulation_steps)
+
+        logger.info("  Continuing training from checkpoint, will skip to saved global_step")
+        logger.info("  Continuing training from epoch %d", epochs_trained)
+        logger.info("  Continuing training from global step %d", global_step)
+        logger.info("  Will skip the first %d steps in the first epoch", steps_trained_in_current_epoch)
 
     model.train()
     model.zero_grad()
@@ -62,6 +75,11 @@ def train_model(device, model, dataloaders, args, logger):
     for _ in train_iterator:
         epoch_iterator = tqdm.tqdm(dataloaders["train"], desc="Iteration", disable=args.local_rank not in [-1, 0])
         for step, batch in enumerate(epoch_iterator):
+            # Skip past any already trained steps if resuming training
+            if steps_trained_in_current_epoch > 0:
+                steps_trained_in_current_epoch -= 1
+                continue
+
             token_ids, token_masks, sent_position_ids, sent_type_ids, sent_perms = batch
             token_ids = token_ids.reshape(-1, token_ids.size(-1)).to(device)
             token_masks = token_masks.reshape(-1, token_masks.size(-1)).to(device)
@@ -88,12 +106,9 @@ def train_model(device, model, dataloaders, args, logger):
             acc_total += labels.numel()
 
             if (step + 1) % args.gradient_accumulation_steps == 0:
-                if args.fp16:
-                    torch.nn.utils.clip_grad_norm_(amp.master_params(optimiser), args.max_grad_norm)
-                else:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
-
                 optimiser.step()
+                if scheduler is not None:
+                    scheduler.step()
                 model.zero_grad()
                 global_step += 1
 
@@ -109,6 +124,8 @@ def train_model(device, model, dataloaders, args, logger):
                     logging_loss = tr_loss
                     running_corrects, acc_total = 0, 0
                     if args.local_rank in [-1, 0]:
+                        if scheduler is not None:
+                            tb_writer.add_scalar("LR", scheduler.get_lr()[0], global_step)
                         tb_writer.add_scalar("Train_Acc", train_acc, global_step)
                         tb_writer.add_scalar("Train_Loss", train_loss, global_step)
                         tb_writer.add_scalar("Val_Acc", val_acc, global_step)
@@ -121,9 +138,11 @@ def train_model(device, model, dataloaders, args, logger):
                     model_to_save = model.module if hasattr(model, "module") else model
                     model_to_save.save_pretrained(output_dir)
                     torch.save(args, os.path.join(output_dir, "training_args.bin"))
-                    torch.save(
-                        {"optimiser_state_dict": optimiser.state_dict(),
-                         "global_step": global_step}, os.path.join(output_dir, "states.bin"))
+                    state_dicts = {"optimiser_state_dict": optimiser.state_dict(),
+                                   "global_step": global_step}
+                    if scheduler is not None:
+                        state_dicts["scheduler_state_dict"] = scheduler.state_dict()
+                    torch.save(state_dicts, os.path.join(output_dir, "states.bin"))
                     logger.info(f"Saving model checkpoint to {output_dir}")
 
             if 0 < args.max_steps < global_step:
