@@ -19,4 +19,4 @@ module list
 conda activate pytorch-nlp
 cd /gpfs/accounts/medhonda501f19w20_class_root/medhonda501f19w20_class/yumouwei/PLL
 # python -m torch.distributed.launch --nproc_per_node=2
-python run_pll.py --deterministic --data_root ../wikipedia/en_wiki_out.txt  --sents_per_doc 32 --max_seq_len 64 --num_derangements 12 --max_steps 1000000 --per_gpu_train_batch_size 32 --per_gpu_eval_batch_size 32 --logging_steps 2000 --save_steps 2000 --attn --config config/1_4_BERT.json --lr 2e-4 --warmup_steps 10000 --use_scheduler
+python run_pll.py --deterministic --data_root ../wikipedia/en_wiki_out.txt  --sents_per_doc 32 --max_seq_len 64 --num_derangements 12 --max_steps 1000000 --per_gpu_train_batch_size 32 --per_gpu_eval_batch_size 32 --logging_steps 5000 --save_steps 5000 --config config/1_4_BERT.json --lr 3e-4 --warmup_steps 10000

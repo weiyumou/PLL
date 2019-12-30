@@ -13,7 +13,7 @@ from transformers import BertTokenizer
 
 import train
 from data import WikiReader, GigawordReader, PLLTrainDataset, PLLEvalDataset
-from models import HiBERT, HiBERTConfig, HiBERTWithAttn
+from models import HiBERTConfig, HiBERTWithAttn
 
 logger = logging.getLogger(__name__)
 
@@ -54,32 +54,22 @@ def parse_args():
     parser.add_argument("--sents_per_doc",
                         type=int,
                         help="Number of sentences per doc",
-                        default=64)
+                        default=32)
     parser.add_argument("--num_epochs",
                         type=int,
                         help="Number of epochs",
                         default=30)
-    parser.add_argument("--lr", default=5e-4, type=float, help="The initial learning rate")
-    parser.add_argument("--use_scheduler",
-                        help="Whether to use LR scheduler",
-                        action="store_true")
-    parser.add_argument("--attn",
-                        help="Whether to use HiBERTWithAttn",
-                        action="store_true")
-    parser.add_argument("--resume",
-                        type=str,
-                        help="Path to a saved checkpoint",
-                        default=None)
-    parser.add_argument("--per_gpu_train_batch_size", default=128, type=int,
+    parser.add_argument("--lr", default=3e-4, type=float, help="The initial learning rate")
+    parser.add_argument("--num_workers", default=4, type=int,
+                        help="Number of workers used in data loading")
+    parser.add_argument("--resume", default=None, type=str,
+                        help="Path to a saved checkpoint")
+    parser.add_argument("--per_gpu_train_batch_size", default=32, type=int,
                         help="Batch size per GPU/CPU for training.")
-    parser.add_argument("--per_gpu_eval_batch_size",
-                        type=int,
-                        help="Batch size per GPU/CPU for evaluation",
-                        default=128)
+    parser.add_argument("--per_gpu_eval_batch_size", default=32, type=int,
+                        help="Batch size per GPU/CPU for evaluation")
     parser.add_argument("--gradient_accumulation_steps", type=int, default=1,
                         help="Number of updates steps to accumulate before performing a backward/update pass.")
-    parser.add_argument("--max_grad_norm", default=1.0, type=float,
-                        help="Max gradient norm.")
     parser.add_argument("--max_steps", default=-1, type=int,
                         help="If > 0: set total number of training steps to perform. Override num_train_epochs.")
     parser.add_argument("--logging_steps", type=int, default=50,
@@ -141,10 +131,7 @@ def main():
         os.makedirs(args.output_dir, exist_ok=True)
 
     if args.resume is not None:
-        if args.attn:
-            model = HiBERTWithAttn.from_pretrained(args.resume)
-        else:
-            model = HiBERT.from_pretrained(args.resume)
+        model = HiBERTWithAttn.from_pretrained(args.resume)
     else:
         with open(args.config, "r") as f:
             model_config = json.load(f)
@@ -155,10 +142,7 @@ def main():
             "num_labels": (0, args.num_derangements)
         })
         model_config = HiBERTConfig(**model_config)
-        if args.attn:
-            model = HiBERTWithAttn(model_config)
-        else:
-            model = HiBERT(model_config)
+        model = HiBERTWithAttn(model_config)
 
     model.to(device)
     logger.info("Training/evaluation parameters %s", args)
@@ -177,9 +161,9 @@ def main():
     eval_sampler = SequentialSampler(val_dataset) if args.local_rank == -1 else DistributedSampler(val_dataset)
     dataloaders = {
         "train": DataLoader(train_dataset, sampler=train_sampler, batch_size=args.train_batch_size, pin_memory=True,
-                            num_workers=4 * args.n_gpu),
+                            num_workers=args.num_workers),
         "val": DataLoader(val_dataset, sampler=eval_sampler, batch_size=args.eval_batch_size, pin_memory=True,
-                          num_workers=4 * args.n_gpu)
+                          num_workers=args.num_workers)
     }
 
     global_step, tr_loss = train.train_model(device, model, dataloaders, args, logger)

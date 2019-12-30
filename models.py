@@ -15,7 +15,7 @@ class HiBERTConfig(BertConfig):
                          intermediate_size, hidden_act, hidden_dropout_prob, attention_probs_dropout_prob,
                          max_position_embeddings, type_vocab_size, initializer_range, layer_norm_eps)
 
-        self.num_labels = kwargs.pop('num_labels', 2)
+        self.num_labels = kwargs.pop("num_labels", 2)
         self.sent_enc_config, self.doc_enc_config = None, None
         self.create_bert_config()
 
@@ -63,8 +63,7 @@ class HiBERT(BertPreTrainedModel):
     def forward(self, token_ids, token_masks, sent_position_ids, sent_type_ids):
         n, s = sent_position_ids.size()
         sent_enc_out, *_ = self.sent_enc(input_ids=token_ids, attention_mask=token_masks)
-        sent_enc_out = torch.split(sent_enc_out[token_masks], torch.sum(token_masks, dim=-1).tolist())
-        sent_enc_out = torch.stack([torch.mean(item, dim=0) for item in sent_enc_out], dim=0).reshape(n, s, -1)
+        sent_enc_out = torch.mean(sent_enc_out, dim=1).reshape(n, s, -1)
         doc_enc_out, *_ = self.doc_enc(inputs_embeds=sent_enc_out,
                                        position_ids=sent_position_ids,
                                        token_type_ids=sent_type_ids)
@@ -77,15 +76,14 @@ class HiBERTWithAttn(HiBERT):
 
     def __init__(self, model_config):
         super(HiBERTWithAttn, self).__init__(model_config)
-        self.attn = Attention(self.doc_enc.config.hidden_size,
-                              self.doc_enc.config.hidden_size // 2,
-                              self.doc_enc.config.initializer_range)
+        self.attn_pool = AttentionPool(self.doc_enc.config.hidden_size,
+                                       self.doc_enc.config.hidden_size // 2,
+                                       self.doc_enc.config.initializer_range)
 
     def forward(self, token_ids, token_masks, sent_position_ids, sent_type_ids):
         n, s = sent_position_ids.size()
         sent_enc_out, *_ = self.sent_enc(input_ids=token_ids, attention_mask=token_masks)
-        attn_weights = self.attn(sent_enc_out)
-        sent_enc_out = torch.bmm(attn_weights, sent_enc_out).reshape(n, s, -1)
+        sent_enc_out = self.attn_pool(sent_enc_out).reshape(n, s, -1)
         doc_enc_out, *_ = self.doc_enc(inputs_embeds=sent_enc_out,
                                        position_ids=sent_position_ids,
                                        token_type_ids=sent_type_ids)
@@ -94,9 +92,9 @@ class HiBERTWithAttn(HiBERT):
         return logits
 
 
-class Attention(nn.Module):
+class AttentionPool(nn.Module):
     def __init__(self, hidden_size, attn_hidden_size, initializer_range) -> None:
-        super(Attention, self).__init__()
+        super(AttentionPool, self).__init__()
         self.fc1 = nn.Linear(in_features=hidden_size, out_features=attn_hidden_size, bias=False)
         self.fc2 = nn.Linear(in_features=attn_hidden_size, out_features=1, bias=False)
         nn.init.normal_(self.fc1.weight, std=initializer_range)
@@ -105,4 +103,5 @@ class Attention(nn.Module):
     def forward(self, x):
         fc1_out = self.fc1(x)
         fc2_out = self.fc2(torch.tanh(fc1_out)).permute([0, 2, 1])
-        return torch.softmax(fc2_out, dim=-1)
+        attn_weights = torch.softmax(fc2_out, dim=-1)
+        return torch.bmm(attn_weights, x)
